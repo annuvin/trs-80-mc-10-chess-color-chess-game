@@ -1,0 +1,2235 @@
+0001   0000             ; ======================================================================
+0002   0000             ;  MICROCHESS for the Tandy/Radio Shack MC-10 with 16K RAM expansion
+0003   0000             ;  Native MC6803 rewrite of Peter Jennings' MicroChess search.
+0004   0000             ;
+0005   0000             ;  MicroChess (c) 1996-2002 Peter Jennings, peterj@benlo.com
+0006   0000             ;  (the evaluation/search algorithm - move generation order, JANUS,
+0007   0000             ;   counters, STRATGY, CKMATE - is Jennings'; the code is new)
+0008   0000             ;
+0009   0000             ;  Differences from the 4K-era program:
+0010   0000             ;    * 0x88 mailbox board, rules built into the move generator:
+0011   0000             ;      castling, en passant, auto-queen promotion, full legality
+0012   0000             ;    * 128x96 four-colour (CG3) display, 12x11 piece sprites
+0013   0000             ;    * play either colour (board flips when you play Black)
+0014   0000             ;    * own keyboard scanner (the BASIC ROM's workspace lives in the
+0015   0000             ;      video RAM that CG3 takes over); Q cold-starts BASIC again
+0016   0000             ;
+0017   0000             ;  Memory map (16K expansion):  $5000.. code+data   $7C00-$8060 variables
+0018   0000             ;                               $8FFF stack         $4000-$4BFF screen
+0019   0000             ;  Load:  CLEAR 100,20479 : CLOADM : EXEC 20480
+0020   0000             ;  Build: tasm6801 -sym microchess-mc10-16k.asm   (Telemark-compatible)
+0021   0000             ; ======================================================================
+0022   0000                     .MSFIRST
+0023   0000             RAM     .EQU $7C00
+0024   5000                     .ORG $5000
+0025   5000 7E 58 84            JMP START
+0026   5003             ; ======================================================================
+0027   5003             ;  ENGINE  -- native 6803 version of Peter Jennings' MicroChess search
+0028   5003             ;  0x88 mailbox board (absolute coordinates), O(1) REVERSE (frame flip),
+0029   5003             ;  full legality via attack detection, castling, en passant, auto-queen.
+0030   5003             ; ======================================================================
+0031   5003             
+0032   5003             ; ---- direct page variables ($80-$FF is the 6803's internal RAM) -------
+0033   5003             PIECE   .EQU $80        ; current piece index 0-15 (in mover's list)
+0034   5003             SQUARE  .EQU $81        ; current destination / working square (0x88 coords)
+0035   5003             MOVEN   .EQU $82        ; direction index
+0036   5003             STATE   .EQU $83        ; search state (0,4,8,12 counting; $FF.. capture tree)
+0037   5003             MYC     .EQU $84        ; mover's colour bit: $00 white, $20 black
+0038   5003             OPC     .EQU $85        ; opponent's colour bit
+0039   5003             PFWD    .EQU $86        ; pawn forward step for mover ($10 / $F0)
+0040   5003             DBLR    .EQU $87        ; rank nibble that triggers second pawn hop ($20 / $50)
+0041   5003             PROMR   .EQU $88        ; promotion rank ($70 / $00)
+0042   5003             MXP     .EQU $89        ; word: pointer to this frame's direction table
+0043   5003             EPSQ    .EQU $8B        ; en-passant target square ($FF none)
+0044   5003             VFLAG   .EQU $8C        ; 1 if candidate move captures
+0045   5003             CAPID   .EQU $8D        ; captured piece id of candidate (opp colour | idx)
+0046   5003             UPTR    .EQU $8E        ; word: undo stack pointer
+0047   5003             LISTMODE .EQU $90       ; 1 = collect legal moves instead of searching
+0048   5003             LISTPTR .EQU $91        ; word
+0049   5003             LISTCNT .EQU $93
+0050   5003             PTS     .EQU $94
+0051   5003             TMPA    .EQU $95
+0052   5003             TMPB    .EQU $96
+0053   5003             TMPC    .EQU $97
+0054   5003             FROMSQ  .EQU $98
+0055   5003             PIDV    .EQU $99
+0056   5003             FLAGS   .EQU $9A
+0057   5003             CAPSQ   .EQU $9B
+0058   5003             MCAP    .EQU $9C
+0059   5003             OLDEP   .EQU $9D
+0060   5003             EPNEW   .EQU $9E
+0061   5003             WCAP0   .EQU $9F
+0062   5003             BESTV   .EQU $A0
+0063   5003             BESTP   .EQU $A1
+0064   5003             BESTM   .EQU $A2
+0065   5003             SCORE   .EQU $A3
+0066   5003             ATC     .EQU $A5
+0067   5003             ATS     .EQU $A6
+0068   5003             ATI     .EQU $A7
+0069   5003             ATD     .EQU $A8
+0070   5003             ATQ     .EQU $A9
+0071   5003             ATF     .EQU $AA
+0072   5003             CAD     .EQU $AB
+0073   5003             CAID    .EQU $AC
+0074   5003             CAR     .EQU $AD
+0075   5003             CAN     .EQU $AE
+0076   5003             CAQ     .EQU $AF
+0077   5003             CAC     .EQU $B0
+0078   5003             CKH     .EQU $B1
+0079   5003             SEARCHOK .EQU $B2
+0080   5003             TMPW    .EQU $B3        ; word
+0081   5003             
+0082   5003             ; ---- data RAM (not part of the load image) -------------------------
+0083   5003             SQ      .EQU RAM+$000   ; 48 : white ids $00-$0F, black ids $20-$2F ; $CC = captured
+0084   5003             PTYPE   .EQU RAM+$030   ; 48 : R=1 B=2 Q=3 N=4 K=8 P=$10
+0085   5003             PVAL    .EQU RAM+$060   ; 48 : capture values
+0086   5003             MOVED   .EQU RAM+$090   ; 48 : piece has moved
+0087   5003             MAIL    .EQU RAM+$0C0   ; 128: 0x88 board, 0 empty else $10|id
+0088   5003             CAPS    .EQU RAM+$140   ; 21 : BCAP0,WCAP1,BCAP1,WCAP2,BCAP2 then 4 state groups
+0089   5003             CNTS    .EQU CAPS+5     ;      group g at CNTS+STATE : MOB,MAXC,CC,PCAP
+0090   5003             USTACK  .EQU RAM+$160   ; undo records, 8 bytes each (32 deep)
+0091   5003             MLIST   .EQU RAM+$260   ; legal move list (from,to) pairs, up to 256
+0092   5003             RAMEND  .EQU RAM+$460
+0093   5003             CBONUS  .EQU 12         ; evaluation bonus for castling
+0094   5003             
+0095   5003             BCAP0   .EQU CAPS+0
+0096   5003             WCAP1   .EQU CAPS+1
+0097   5003             BCAP1   .EQU CAPS+2
+0098   5003             WCAP2   .EQU CAPS+3
+0099   5003             BCAP2   .EQU CAPS+4
+0100   5003             BMOB    .EQU CNTS+0
+0101   5003             BMAXC   .EQU CNTS+1
+0102   5003             BMCC    .EQU CNTS+2
+0103   5003             BMAXP   .EQU CNTS+3
+0104   5003             XMAXC   .EQU CNTS+5
+0105   5003             WMOB    .EQU CNTS+8
+0106   5003             WMAXC   .EQU CNTS+9
+0107   5003             WCC     .EQU CNTS+10
+0108   5003             WMAXP   .EQU CNTS+11
+0109   5003             PMOB    .EQU CNTS+12
+0110   5003             PMAXC   .EQU CNTS+13
+0111   5003             PCC     .EQU CNTS+14
+0112   5003             
+0113   5003             ; ---------------------------------------------------------------------
+0114   5003             ;  frame handling:  REVERSE flips whose turn the engine "sees"
+0115   5003             ; ---------------------------------------------------------------------
+0116   5003             SETFRAME:
+0117   5003 96 84               LDAA MYC
+0118   5005 88 20               EORA #$20
+0119   5007 97 85               STAA OPC
+0120   5009 7D 00 84            TST MYC
+0121   500C 26 12               BNE SF_BLK
+0122   500E 86 10               LDAA #$10
+0123   5010 97 86               STAA PFWD
+0124   5012 86 20               LDAA #$20
+0125   5014 97 87               STAA DBLR
+0126   5016 86 70               LDAA #$70
+0127   5018 97 88               STAA PROMR
+0128   501A CE 58 1A            LDX #MOVEX0
+0129   501D DF 89               STX MXP
+0130   501F 39                  RTS
+0131   5020 86 F0       SF_BLK: LDAA #$F0
+0132   5022 97 86               STAA PFWD
+0133   5024 86 50               LDAA #$50
+0134   5026 97 87               STAA DBLR
+0135   5028 7F 00 88            CLR PROMR
+0136   502B CE 58 2B            LDX #MOVEX1
+0137   502E DF 89               STX MXP
+0138   5030 39                  RTS
+0139   5031             REVERSE:
+0140   5031 96 84               LDAA MYC
+0141   5033 88 20               EORA #$20
+0142   5035 97 84               STAA MYC
+0143   5037 20 CA               BRA SETFRAME
+0144   5039             
+0145   5039             ; ---------------------------------------------------------------------
+0146   5039             ;  position setup
+0147   5039             ; ---------------------------------------------------------------------
+0148   5039             COPYB:                          ; copy B bytes from (X) to (TMPW)
+0149   5039 A6 00               LDAA 0,X
+0150   503B 08                  INX
+0151   503C 3C                  PSHX
+0152   503D DE B3               LDX TMPW
+0153   503F A7 00               STAA 0,X
+0154   5041 08                  INX
+0155   5042 DF B3               STX TMPW
+0156   5044 38                  PULX
+0157   5045 5A                  DECB
+0158   5046 26 F1               BNE COPYB
+0159   5048 39                  RTS
+0160   5049             NEWPOS:                         ; standard starting position, white to move
+0161   5049 CE 7C 00            LDX #SQ
+0162   504C DF B3               STX TMPW
+0163   504E CE 58 44            LDX #SETW
+0164   5051 C6 10               LDAB #16
+0165   5053 BD 50 39            JSR COPYB
+0166   5056 CE 7C 20            LDX #SQ+$20
+0167   5059 DF B3               STX TMPW
+0168   505B CE 58 54            LDX #SETB
+0169   505E C6 10               LDAB #16
+0170   5060 BD 50 39            JSR COPYB
+0171   5063 CE 7C 30            LDX #PTYPE
+0172   5066 DF B3               STX TMPW
+0173   5068 CE 58 64            LDX #TYPEINIT
+0174   506B C6 10               LDAB #16
+0175   506D BD 50 39            JSR COPYB
+0176   5070 CE 7C 50            LDX #PTYPE+$20
+0177   5073 DF B3               STX TMPW
+0178   5075 CE 58 64            LDX #TYPEINIT
+0179   5078 C6 10               LDAB #16
+0180   507A BD 50 39            JSR COPYB
+0181   507D CE 7C 60            LDX #PVAL
+0182   5080 DF B3               STX TMPW
+0183   5082 CE 58 74            LDX #POINTS
+0184   5085 C6 10               LDAB #16
+0185   5087 BD 50 39            JSR COPYB
+0186   508A CE 7C 80            LDX #PVAL+$20
+0187   508D DF B3               STX TMPW
+0188   508F CE 58 74            LDX #POINTS
+0189   5092 C6 10               LDAB #16
+0190   5094 BD 50 39            JSR COPYB
+0191   5097 CE 7C 90            LDX #MOVED
+0192   509A C6 30               LDAB #48
+0193   509C 4F                  CLRA
+0194   509D A7 00       NP_MV:  STAA 0,X
+0195   509F 08                  INX
+0196   50A0 5A                  DECB
+0197   50A1 26 FA               BNE NP_MV
+0198   50A3 86 FF               LDAA #$FF
+0199   50A5 97 8B               STAA EPSQ
+0200   50A7 7F 00 84            CLR MYC
+0201   50AA BD 50 03            JSR SETFRAME
+0202   50AD CE 7D 60            LDX #USTACK
+0203   50B0 DF 8E               STX UPTR
+0204   50B2 7F 00 90            CLR LISTMODE
+0205   50B5                     ; fall into BUILD_MAIL
+0206   50B5             BUILD_MAIL:
+0207   50B5 CE 7C C0            LDX #MAIL
+0208   50B8 4F                  CLRA
+0209   50B9 A7 00       BM_C:   STAA 0,X
+0210   50BB 08                  INX
+0211   50BC 8C 7D 40            CPX #MAIL+128
+0212   50BF 26 F8               BNE BM_C
+0213   50C1 C6 00               LDAB #0
+0214   50C3 D7 95       BM_L:   STAB TMPA
+0215   50C5 CE 7C 00            LDX #SQ
+0216   50C8 3A                  ABX
+0217   50C9 A6 00               LDAA 0,X
+0218   50CB 81 CC               CMPA #$CC
+0219   50CD 27 0B               BEQ BM_N
+0220   50CF 16                  TAB
+0221   50D0 CE 7C C0            LDX #MAIL
+0222   50D3 3A                  ABX
+0223   50D4 96 95               LDAA TMPA
+0224   50D6 8A 10               ORAA #$10
+0225   50D8 A7 00               STAA 0,X
+0226   50DA D6 95       BM_N:   LDAB TMPA
+0227   50DC 5C                  INCB
+0228   50DD C1 10               CMPB #16
+0229   50DF 26 02               BNE BM_L2
+0230   50E1 C6 20               LDAB #$20
+0231   50E3 C1 30       BM_L2:  CMPB #$30
+0232   50E5 26 DC               BNE BM_L
+0233   50E7 39                  RTS
+0234   50E8             
+0235   50E8             ; ---------------------------------------------------------------------
+0236   50E8             ;  CMOVE: step SQUARE by MOVEX[MOVEN].  A = 0 empty, 1 capture (CAPID set),
+0237   50E8             ;         2 blocked (off board or own piece)
+0238   50E8             ; ---------------------------------------------------------------------
+0239   50E8 DE 89       CMOVE:  LDX MXP
+0240   50EA D6 82               LDAB MOVEN
+0241   50EC 3A                  ABX
+0242   50ED 96 81               LDAA SQUARE
+0243   50EF AB 00               ADDA 0,X
+0244   50F1 97 81               STAA SQUARE
+0245   50F3 85 88               BITA #$88
+0246   50F5 26 17               BNE CM_BLK
+0247   50F7 16                  TAB
+0248   50F8 CE 7C C0            LDX #MAIL
+0249   50FB 3A                  ABX
+0250   50FC A6 00               LDAA 0,X
+0251   50FE 27 0D               BEQ CM_RET              ; empty: A=0
+0252   5100 16                  TAB
+0253   5101 C4 20               ANDB #$20
+0254   5103 D1 84               CMPB MYC
+0255   5105 27 07               BEQ CM_BLK
+0256   5107 84 2F               ANDA #$2F
+0257   5109 97 8D               STAA CAPID
+0258   510B 86 01               LDAA #1
+0259   510D 39          CM_RET: RTS
+0260   510E 86 02       CM_BLK: LDAA #2
+0261   5110 39                  RTS
+0262   5111             
+0263   5111 D6 84       RESET:  LDAB MYC
+0264   5113 DA 80               ORAB PIECE
+0265   5115 CE 7C 00            LDX #SQ
+0266   5118 3A                  ABX
+0267   5119 A6 00               LDAA 0,X
+0268   511B 97 81               STAA SQUARE
+0269   511D 39                  RTS
+0270   511E             
+0271   511E             ; ---------------------------------------------------------------------
+0272   511E             ;  CHKLEG: legality test of the candidate (PIECE,SQUARE) for states 0-7.
+0273   511E             ;          returns Z set if legal.
+0274   511E             ; ---------------------------------------------------------------------
+0275   511E 96 83       CHKLEG: LDAA STATE
+0276   5120 81 08               CMPA #8
+0277   5122 24 17               BCC CL_OK
+0278   5124 BD 51 46            JSR MOVE
+0279   5127 D6 84               LDAB MYC
+0280   5129 CE 7C 00            LDX #SQ
+0281   512C 3A                  ABX
+0282   512D E6 00               LDAB 0,X                ; my king's square
+0283   512F 96 85               LDAA OPC
+0284   5131 BD 53 B7            JSR ATTACKED
+0285   5134 36                  PSHA
+0286   5135 BD 52 BD            JSR UMOVE
+0287   5138 32                  PULA
+0288   5139 4D                  TSTA
+0289   513A 39                  RTS
+0290   513B 4F          CL_OK:  CLRA
+0291   513C 39                  RTS
+0292   513D BD 51 1E    EMIT:   JSR CHKLEG
+0293   5140 26 03               BNE EM_RET
+0294   5142 7E 56 58            JMP JANUS
+0295   5145 39          EM_RET: RTS
+0296   5146             
+0297   5146             ; ---------------------------------------------------------------------
+0298   5146             ;  MOVE / UMOVE : make and unmake PIECE -> SQUARE (handles capture, en
+0299   5146             ;  passant, castling, auto-queen, moved flags, ep square)
+0300   5146             ; ---------------------------------------------------------------------
+0301   5146 D6 84       MOVE:   LDAB MYC
+0302   5148 DA 80               ORAB PIECE
+0303   514A D7 99               STAB PIDV
+0304   514C CE 7C 00            LDX #SQ
+0305   514F 3A                  ABX
+0306   5150 A6 00               LDAA 0,X
+0307   5152 97 98               STAA FROMSQ
+0308   5154 7F 00 9A            CLR FLAGS
+0309   5157 96 8B               LDAA EPSQ
+0310   5159 97 9D               STAA OLDEP
+0311   515B 86 FF               LDAA #$FF
+0312   515D 97 9E               STAA EPNEW
+0313   515F 96 81               LDAA SQUARE
+0314   5161 97 9B               STAA CAPSQ
+0315   5163 D6 81               LDAB SQUARE
+0316   5165 CE 7C C0            LDX #MAIL
+0317   5168 3A                  ABX
+0318   5169 A6 00               LDAA 0,X
+0319   516B 26 34               BNE MV_CAP
+0320   516D D6 99               LDAB PIDV               ; empty target: en passant?
+0321   516F CE 7C 30            LDX #PTYPE
+0322   5172 3A                  ABX
+0323   5173 A6 00               LDAA 0,X
+0324   5175 81 10               CMPA #$10
+0325   5177 26 3F               BNE MV_NOCAP
+0326   5179 96 81               LDAA SQUARE
+0327   517B 91 8B               CMPA EPSQ
+0328   517D 26 39               BNE MV_NOCAP
+0329   517F 96 98               LDAA FROMSQ
+0330   5181 98 81               EORA SQUARE
+0331   5183 84 0F               ANDA #$0F
+0332   5185 27 31               BEQ MV_NOCAP
+0333   5187 96 98               LDAA FROMSQ
+0334   5189 84 F0               ANDA #$F0
+0335   518B 97 95               STAA TMPA
+0336   518D 96 81               LDAA SQUARE
+0337   518F 84 0F               ANDA #$0F
+0338   5191 9A 95               ORAA TMPA
+0339   5193 97 9B               STAA CAPSQ
+0340   5195 86 04               LDAA #4
+0341   5197 97 9A               STAA FLAGS
+0342   5199 D6 9B               LDAB CAPSQ
+0343   519B CE 7C C0            LDX #MAIL
+0344   519E 3A                  ABX
+0345   519F A6 00               LDAA 0,X
+0346   51A1 84 2F       MV_CAP: ANDA #$2F
+0347   51A3 97 9C               STAA MCAP
+0348   51A5 16                  TAB
+0349   51A6 CE 7C 00            LDX #SQ
+0350   51A9 3A                  ABX
+0351   51AA 86 CC               LDAA #$CC
+0352   51AC A7 00               STAA 0,X
+0353   51AE D6 9B               LDAB CAPSQ
+0354   51B0 CE 7C C0            LDX #MAIL
+0355   51B3 3A                  ABX
+0356   51B4 6F 00               CLR 0,X
+0357   51B6 20 04               BRA MV_CAP2
+0358   51B8 86 FF       MV_NOCAP: LDAA #$FF
+0359   51BA 97 9C               STAA MCAP
+0360   51BC D6 98       MV_CAP2: LDAB FROMSQ
+0361   51BE CE 7C C0            LDX #MAIL
+0362   51C1 3A                  ABX
+0363   51C2 6F 00               CLR 0,X
+0364   51C4 D6 81               LDAB SQUARE
+0365   51C6 CE 7C C0            LDX #MAIL
+0366   51C9 3A                  ABX
+0367   51CA 96 99               LDAA PIDV
+0368   51CC 8A 10               ORAA #$10
+0369   51CE A7 00               STAA 0,X
+0370   51D0 D6 99               LDAB PIDV
+0371   51D2 CE 7C 00            LDX #SQ
+0372   51D5 3A                  ABX
+0373   51D6 96 81               LDAA SQUARE
+0374   51D8 A7 00               STAA 0,X
+0375   51DA D6 99               LDAB PIDV
+0376   51DC CE 7C 90            LDX #MOVED
+0377   51DF 3A                  ABX
+0378   51E0 A6 00               LDAA 0,X
+0379   51E2 27 06               BEQ MV_M0
+0380   51E4 96 9A               LDAA FLAGS
+0381   51E6 8A 08               ORAA #8
+0382   51E8 97 9A               STAA FLAGS
+0383   51EA 86 01       MV_M0:  LDAA #1
+0384   51EC A7 00               STAA 0,X
+0385   51EE D6 99               LDAB PIDV
+0386   51F0 CE 7C 30            LDX #PTYPE
+0387   51F3 3A                  ABX
+0388   51F4 A6 00               LDAA 0,X
+0389   51F6 81 08               CMPA #$08
+0390   51F8 27 38               BEQ MV_KING
+0391   51FA 81 10               CMPA #$10
+0392   51FC 26 31               BNE MV_RECJ
+0393   51FE 96 81               LDAA SQUARE             ; pawn: promotion?
+0394   5200 84 F0               ANDA #$F0
+0395   5202 91 88               CMPA PROMR
+0396   5204 26 16               BNE MV_PDBL
+0397   5206 86 03               LDAA #3
+0398   5208 A7 00               STAA 0,X                ; PTYPE = queen
+0399   520A D6 99               LDAB PIDV
+0400   520C CE 7C 60            LDX #PVAL
+0401   520F 3A                  ABX
+0402   5210 86 0A               LDAA #10
+0403   5212 A7 00               STAA 0,X
+0404   5214 96 9A               LDAA FLAGS
+0405   5216 8A 01               ORAA #1
+0406   5218 97 9A               STAA FLAGS
+0407   521A 20 13               BRA MV_RECJ
+0408   521C 96 81       MV_PDBL: LDAA SQUARE            ; double step -> ep square
+0409   521E 90 98               SUBA FROMSQ
+0410   5220 81 20               CMPA #$20
+0411   5222 27 04               BEQ MV_DB
+0412   5224 81 E0               CMPA #$E0
+0413   5226 26 07               BNE MV_RECJ
+0414   5228 96 81       MV_DB:  LDAA SQUARE
+0415   522A 9B 98               ADDA FROMSQ
+0416   522C 44                  LSRA
+0417   522D 97 9E               STAA EPNEW
+0418   522F 7E 52 95    MV_RECJ: JMP MV_REC
+0419   5232 96 81       MV_KING: LDAA SQUARE            ; king two squares = castling
+0420   5234 90 98               SUBA FROMSQ
+0421   5236 81 02               CMPA #2
+0422   5238 27 04               BEQ MV_CK
+0423   523A 81 FE               CMPA #$FE
+0424   523C 26 F1               BNE MV_RECJ
+0425   523E 96 9A       MV_CK:  LDAA FLAGS
+0426   5240 8A 02               ORAA #2
+0427   5242 97 9A               STAA FLAGS
+0428   5244 96 81               LDAA SQUARE
+0429   5246 90 98               SUBA FROMSQ
+0430   5248 81 02               CMPA #2
+0431   524A 27 0F               BEQ MV_KS
+0432   524C 96 98               LDAA FROMSQ             ; queen side: a-rook -> d
+0433   524E 84 F0               ANDA #$F0
+0434   5250 97 95               STAA TMPA
+0435   5252 96 98               LDAA FROMSQ
+0436   5254 4A                  DECA
+0437   5255 97 96               STAA TMPB
+0438   5257 86 02               LDAA #2
+0439   5259 20 0F               BRA MV_RK
+0440   525B 96 98       MV_KS:  LDAA FROMSQ             ; king side: h-rook -> f
+0441   525D 84 F0               ANDA #$F0
+0442   525F 8A 07               ORAA #7
+0443   5261 97 95               STAA TMPA
+0444   5263 96 98               LDAA FROMSQ
+0445   5265 4C                  INCA
+0446   5266 97 96               STAA TMPB
+0447   5268 86 03               LDAA #3
+0448   526A 9A 84       MV_RK:  ORAA MYC
+0449   526C 97 97               STAA TMPC               ; rook id
+0450   526E 16                  TAB
+0451   526F CE 7C 00            LDX #SQ
+0452   5272 3A                  ABX
+0453   5273 96 96               LDAA TMPB
+0454   5275 A7 00               STAA 0,X
+0455   5277 D6 97               LDAB TMPC
+0456   5279 CE 7C 90            LDX #MOVED
+0457   527C 3A                  ABX
+0458   527D 86 01               LDAA #1
+0459   527F A7 00               STAA 0,X
+0460   5281 D6 95               LDAB TMPA
+0461   5283 CE 7C C0            LDX #MAIL
+0462   5286 3A                  ABX
+0463   5287 A6 00               LDAA 0,X                ; rook's mailbox code
+0464   5289 6F 00               CLR 0,X
+0465   528B 36                  PSHA
+0466   528C D6 96               LDAB TMPB
+0467   528E CE 7C C0            LDX #MAIL
+0468   5291 3A                  ABX
+0469   5292 32                  PULA
+0470   5293 A7 00               STAA 0,X
+0471   5295 DE 8E       MV_REC: LDX UPTR
+0472   5297 96 81               LDAA SQUARE
+0473   5299 A7 00               STAA 0,X
+0474   529B 96 9C               LDAA MCAP
+0475   529D A7 01               STAA 1,X
+0476   529F 96 98               LDAA FROMSQ
+0477   52A1 A7 02               STAA 2,X
+0478   52A3 96 80               LDAA PIECE
+0479   52A5 A7 03               STAA 3,X
+0480   52A7 96 82               LDAA MOVEN
+0481   52A9 A7 04               STAA 4,X
+0482   52AB 96 9A               LDAA FLAGS
+0483   52AD A7 05               STAA 5,X
+0484   52AF 96 9D               LDAA OLDEP
+0485   52B1 A7 06               STAA 6,X
+0486   52B3 C6 08               LDAB #8
+0487   52B5 3A                  ABX
+0488   52B6 DF 8E               STX UPTR
+0489   52B8 96 9E               LDAA EPNEW
+0490   52BA 97 8B               STAA EPSQ
+0491   52BC 39                  RTS
+0492   52BD             
+0493   52BD DC 8E       UMOVE:  LDD UPTR
+0494   52BF 83 00 08            SUBD #8
+0495   52C2 DD 8E               STD UPTR
+0496   52C4 DE 8E               LDX UPTR
+0497   52C6 A6 04               LDAA 4,X
+0498   52C8 97 82               STAA MOVEN
+0499   52CA A6 03               LDAA 3,X
+0500   52CC 97 80               STAA PIECE
+0501   52CE A6 06               LDAA 6,X
+0502   52D0 97 8B               STAA EPSQ
+0503   52D2 A6 02               LDAA 2,X
+0504   52D4 97 98               STAA FROMSQ
+0505   52D6 A6 05               LDAA 5,X
+0506   52D8 97 9A               STAA FLAGS
+0507   52DA A6 00               LDAA 0,X
+0508   52DC 97 81               STAA SQUARE
+0509   52DE A6 01               LDAA 1,X
+0510   52E0 97 9C               STAA MCAP
+0511   52E2 D6 84               LDAB MYC
+0512   52E4 DA 80               ORAB PIECE
+0513   52E6 D7 99               STAB PIDV
+0514   52E8 96 9A               LDAA FLAGS              ; promotion undo
+0515   52EA 84 01               ANDA #1
+0516   52EC 27 12               BEQ UM_1
+0517   52EE CE 7C 30            LDX #PTYPE
+0518   52F1 3A                  ABX
+0519   52F2 86 10               LDAA #$10
+0520   52F4 A7 00               STAA 0,X
+0521   52F6 D6 99               LDAB PIDV
+0522   52F8 CE 7C 60            LDX #PVAL
+0523   52FB 3A                  ABX
+0524   52FC 86 02               LDAA #2
+0525   52FE A7 00               STAA 0,X
+0526   5300 D6 99       UM_1:   LDAB PIDV               ; restore moved flag
+0527   5302 CE 7C 90            LDX #MOVED
+0528   5305 3A                  ABX
+0529   5306 96 9A               LDAA FLAGS
+0530   5308 84 08               ANDA #8
+0531   530A 44                  LSRA
+0532   530B 44                  LSRA
+0533   530C 44                  LSRA
+0534   530D A7 00               STAA 0,X
+0535   530F 96 9A               LDAA FLAGS              ; castling rook back
+0536   5311 84 02               ANDA #2
+0537   5313 27 4F               BEQ UM_2
+0538   5315 96 81               LDAA SQUARE
+0539   5317 90 98               SUBA FROMSQ
+0540   5319 81 02               CMPA #2
+0541   531B 27 0F               BEQ UM_KS
+0542   531D 96 98               LDAA FROMSQ             ; queen side: rook d -> a
+0543   531F 84 F0               ANDA #$F0
+0544   5321 97 95               STAA TMPA               ; rook home
+0545   5323 96 98               LDAA FROMSQ
+0546   5325 4A                  DECA
+0547   5326 97 96               STAA TMPB               ; rook now
+0548   5328 86 02               LDAA #2
+0549   532A 20 0F               BRA UM_RK
+0550   532C 96 98       UM_KS:  LDAA FROMSQ
+0551   532E 84 F0               ANDA #$F0
+0552   5330 8A 07               ORAA #7
+0553   5332 97 95               STAA TMPA
+0554   5334 96 98               LDAA FROMSQ
+0555   5336 4C                  INCA
+0556   5337 97 96               STAA TMPB
+0557   5339 86 03               LDAA #3
+0558   533B 9A 84       UM_RK:  ORAA MYC
+0559   533D 97 97               STAA TMPC
+0560   533F 16                  TAB
+0561   5340 CE 7C 00            LDX #SQ
+0562   5343 3A                  ABX
+0563   5344 96 95               LDAA TMPA
+0564   5346 A7 00               STAA 0,X
+0565   5348 D6 97               LDAB TMPC
+0566   534A CE 7C 90            LDX #MOVED
+0567   534D 3A                  ABX
+0568   534E 6F 00               CLR 0,X
+0569   5350 D6 96               LDAB TMPB
+0570   5352 CE 7C C0            LDX #MAIL
+0571   5355 3A                  ABX
+0572   5356 A6 00               LDAA 0,X
+0573   5358 6F 00               CLR 0,X
+0574   535A 36                  PSHA
+0575   535B D6 95               LDAB TMPA
+0576   535D CE 7C C0            LDX #MAIL
+0577   5360 3A                  ABX
+0578   5361 32                  PULA
+0579   5362 A7 00               STAA 0,X
+0580   5364 D6 81       UM_2:   LDAB SQUARE             ; clear dest, put mover back
+0581   5366 CE 7C C0            LDX #MAIL
+0582   5369 3A                  ABX
+0583   536A 6F 00               CLR 0,X
+0584   536C D6 98               LDAB FROMSQ
+0585   536E CE 7C C0            LDX #MAIL
+0586   5371 3A                  ABX
+0587   5372 96 99               LDAA PIDV
+0588   5374 8A 10               ORAA #$10
+0589   5376 A7 00               STAA 0,X
+0590   5378 D6 99               LDAB PIDV
+0591   537A CE 7C 00            LDX #SQ
+0592   537D 3A                  ABX
+0593   537E 96 98               LDAA FROMSQ
+0594   5380 A7 00               STAA 0,X
+0595   5382 96 9C               LDAA MCAP               ; captured piece back
+0596   5384 81 FF               CMPA #$FF
+0597   5386 27 2E               BEQ UM_RET
+0598   5388 96 81               LDAA SQUARE
+0599   538A 97 9B               STAA CAPSQ
+0600   538C 96 9A               LDAA FLAGS
+0601   538E 84 04               ANDA #4
+0602   5390 27 0E               BEQ UM_C1
+0603   5392 96 98               LDAA FROMSQ
+0604   5394 84 F0               ANDA #$F0
+0605   5396 97 95               STAA TMPA
+0606   5398 96 81               LDAA SQUARE
+0607   539A 84 0F               ANDA #$0F
+0608   539C 9A 95               ORAA TMPA
+0609   539E 97 9B               STAA CAPSQ
+0610   53A0 D6 9C       UM_C1:  LDAB MCAP
+0611   53A2 CE 7C 00            LDX #SQ
+0612   53A5 3A                  ABX
+0613   53A6 96 9B               LDAA CAPSQ
+0614   53A8 A7 00               STAA 0,X
+0615   53AA D6 9B               LDAB CAPSQ
+0616   53AC CE 7C C0            LDX #MAIL
+0617   53AF 3A                  ABX
+0618   53B0 96 9C               LDAA MCAP
+0619   53B2 8A 10               ORAA #$10
+0620   53B4 A7 00               STAA 0,X
+0621   53B6 39          UM_RET: RTS
+0622   53B7             
+0623   53B7             ; ---------------------------------------------------------------------
+0624   53B7             ;  ATTACKED: A = attacker colour bit, B = target square.
+0625   53B7             ;            returns A = 1 if attacked else 0 (flags set accordingly)
+0626   53B7             ; ---------------------------------------------------------------------
+0627   53B7             ATTACKED:
+0628   53B7 97 A5               STAA ATC
+0629   53B9 D7 A6               STAB ATS
+0630   53BB 86 07               LDAA #7
+0631   53BD 97 A7               STAA ATI
+0632   53BF CE 58 23    AT_N:   LDX #MOVEX0+9           ; knight offsets
+0633   53C2 D6 A7               LDAB ATI
+0634   53C4 3A                  ABX
+0635   53C5 96 A6               LDAA ATS
+0636   53C7 AB 00               ADDA 0,X
+0637   53C9 85 88               BITA #$88
+0638   53CB 26 1D               BNE AT_N2
+0639   53CD 16                  TAB
+0640   53CE CE 7C C0            LDX #MAIL
+0641   53D1 3A                  ABX
+0642   53D2 A6 00               LDAA 0,X
+0643   53D4 27 14               BEQ AT_N2
+0644   53D6 16                  TAB
+0645   53D7 C4 20               ANDB #$20
+0646   53D9 D1 A5               CMPB ATC
+0647   53DB 26 0D               BNE AT_N2
+0648   53DD 84 2F               ANDA #$2F
+0649   53DF 16                  TAB
+0650   53E0 CE 7C 30            LDX #PTYPE
+0651   53E3 3A                  ABX
+0652   53E4 A6 00               LDAA 0,X
+0653   53E6 85 04               BITA #4
+0654   53E8 26 7B               BNE AT_YES
+0655   53EA 7A 00 A7    AT_N2:  DEC ATI
+0656   53ED 2A D0               BPL AT_N
+0657   53EF 86 07               LDAA #7
+0658   53F1 97 A7               STAA ATI
+0659   53F3 CE 58 3C    AT_R:   LDX #RAYDIR
+0660   53F6 D6 A7               LDAB ATI
+0661   53F8 3A                  ABX
+0662   53F9 A6 00               LDAA 0,X
+0663   53FB 97 A8               STAA ATD
+0664   53FD 96 A6               LDAA ATS
+0665   53FF 97 A9               STAA ATQ
+0666   5401 86 01               LDAA #1
+0667   5403 97 AA               STAA ATF
+0668   5405 96 A9       AT_S:   LDAA ATQ
+0669   5407 9B A8               ADDA ATD
+0670   5409 97 A9               STAA ATQ
+0671   540B 85 88               BITA #$88
+0672   540D 26 4F               BNE AT_R2
+0673   540F 16                  TAB
+0674   5410 CE 7C C0            LDX #MAIL
+0675   5413 3A                  ABX
+0676   5414 A6 00               LDAA 0,X
+0677   5416 26 05               BNE AT_HIT
+0678   5418 7F 00 AA            CLR ATF
+0679   541B 20 E8               BRA AT_S
+0680   541D 16          AT_HIT: TAB
+0681   541E C4 20               ANDB #$20
+0682   5420 D1 A5               CMPB ATC
+0683   5422 26 3A               BNE AT_R2
+0684   5424 84 2F               ANDA #$2F
+0685   5426 16                  TAB
+0686   5427 CE 7C 30            LDX #PTYPE
+0687   542A 3A                  ABX
+0688   542B A6 00               LDAA 0,X
+0689   542D D6 A7               LDAB ATI
+0690   542F C1 04               CMPB #4
+0691   5431 24 06               BCC AT_DG
+0692   5433 85 01               BITA #1
+0693   5435 26 2E               BNE AT_YES
+0694   5437 20 1C               BRA AT_ADJ
+0695   5439 85 02       AT_DG:  BITA #2
+0696   543B 26 28               BNE AT_YES
+0697   543D 7D 00 AA            TST ATF
+0698   5440 27 1C               BEQ AT_R2
+0699   5442 85 10               BITA #$10
+0700   5444 27 0F               BEQ AT_ADJ
+0701   5446 D6 A8               LDAB ATD
+0702   5448 7D 00 A5            TST ATC
+0703   544B 27 05               BEQ AT_PW
+0704   544D 5D                  TSTB
+0705   544E 2A 15               BPL AT_YES
+0706   5450 20 03               BRA AT_ADJ
+0707   5452 5D          AT_PW:  TSTB
+0708   5453 2B 10               BMI AT_YES
+0709   5455 7D 00 AA    AT_ADJ: TST ATF
+0710   5458 27 04               BEQ AT_R2
+0711   545A 85 08               BITA #8
+0712   545C 26 07               BNE AT_YES
+0713   545E 7A 00 A7    AT_R2:  DEC ATI
+0714   5461 2A 90               BPL AT_R
+0715   5463 4F                  CLRA
+0716   5464 39                  RTS
+0717   5465 86 01       AT_YES: LDAA #1
+0718   5467 39                  RTS
+0719   5468             
+0720   5468             INCHECK:                        ; A=1 if side to move is in check
+0721   5468 D6 84               LDAB MYC
+0722   546A CE 7C 00            LDX #SQ
+0723   546D 3A                  ABX
+0724   546E E6 00               LDAB 0,X
+0725   5470 96 85               LDAA OPC
+0726   5472 7E 53 B7            JMP ATTACKED
+0727   5475             
+0728   5475             ; ---------------------------------------------------------------------
+0729   5475             ;  move generation (order is Jennings': pieces 15..0, his direction order)
+0730   5475             ; ---------------------------------------------------------------------
+0731   5475 CE 7D 40    GNMX:   LDX #CAPS
+0732   5478 C6 15               LDAB #21
+0733   547A 20 05               BRA GZ_CLR
+0734   547C CE 7D 40    GNMZ:   LDX #CAPS
+0735   547F C6 11               LDAB #17
+0736   5481 4F          GZ_CLR: CLRA
+0737   5482 A7 00       GZ_L:   STAA 0,X
+0738   5484 08                  INX
+0739   5485 5A                  DECB
+0740   5486 26 FA               BNE GZ_L
+0741   5488 86 10       GNM:    LDAA #16
+0742   548A 97 80               STAA PIECE
+0743   548C 7A 00 80    NEWP:   DEC PIECE
+0744   548F 2A 01               BPL NEX
+0745   5491 39                  RTS
+0746   5492 D6 84       NEX:    LDAB MYC
+0747   5494 DA 80               ORAB PIECE
+0748   5496 CE 7C 00            LDX #SQ
+0749   5499 3A                  ABX
+0750   549A A6 00               LDAA 0,X
+0751   549C 81 CC               CMPA #$CC
+0752   549E 27 EC               BEQ NEWP
+0753   54A0 97 81               STAA SQUARE
+0754   54A2 CE 7C 30            LDX #PTYPE
+0755   54A5 D6 84               LDAB MYC
+0756   54A7 DA 80               ORAB PIECE
+0757   54A9 3A                  ABX
+0758   54AA A6 00               LDAA 0,X
+0759   54AC 81 10               CMPA #$10
+0760   54AE 27 4D               BEQ G_PAWN
+0761   54B0 81 04               CMPA #4
+0762   54B2 27 3A               BEQ G_KNIGHT
+0763   54B4 81 02               CMPA #2
+0764   54B6 27 27               BEQ G_BISHOP
+0765   54B8 81 03               CMPA #3
+0766   54BA 27 12               BEQ G_QUEEN
+0767   54BC 81 01               CMPA #1
+0768   54BE 27 14               BEQ G_ROOK
+0769   54C0 86 08               LDAA #8                 ; king
+0770   54C2 97 82               STAA MOVEN
+0771   54C4 BD 55 5A    G_KING: JSR SNGMV
+0772   54C7 26 FB               BNE G_KING
+0773   54C9 BD 55 99            JSR CASTLES
+0774   54CC 20 BE               BRA NEWP
+0775   54CE 86 08       G_QUEEN: LDAA #8
+0776   54D0 97 82               STAA MOVEN
+0777   54D2 20 04               BRA GQ1
+0778   54D4 86 04       G_ROOK: LDAA #4
+0779   54D6 97 82               STAA MOVEN
+0780   54D8 BD 55 77    GQ1:    JSR LINE
+0781   54DB 26 FB               BNE GQ1
+0782   54DD 20 AD               BRA NEWP
+0783   54DF 86 08       G_BISHOP: LDAA #8
+0784   54E1 97 82               STAA MOVEN
+0785   54E3 BD 55 77    GB1:    JSR LINE
+0786   54E6 96 82               LDAA MOVEN
+0787   54E8 81 04               CMPA #4
+0788   54EA 26 F7               BNE GB1
+0789   54EC 20 9E               BRA NEWP
+0790   54EE 86 10       G_KNIGHT: LDAA #16
+0791   54F0 97 82               STAA MOVEN
+0792   54F2 BD 55 5A    GN1:    JSR SNGMV
+0793   54F5 96 82               LDAA MOVEN
+0794   54F7 81 08               CMPA #8
+0795   54F9 26 F7               BNE GN1
+0796   54FB 20 8F               BRA NEWP
+0797   54FD 86 06       G_PAWN: LDAA #6
+0798   54FF 97 82               STAA MOVEN
+0799   5501 BD 50 E8    P1:     JSR CMOVE
+0800   5504 4D                  TSTA
+0801   5505 27 0D               BEQ P1E
+0802   5507 81 02               CMPA #2
+0803   5509 27 2C               BEQ P2
+0804   550B 86 01               LDAA #1
+0805   550D 97 8C               STAA VFLAG
+0806   550F BD 51 3D            JSR EMIT
+0807   5512 20 23               BRA P2
+0808   5514 7D 00 83    P1E:    TST STATE
+0809   5517 2B 1E               BMI P2
+0810   5519 96 8B               LDAA EPSQ
+0811   551B 91 81               CMPA SQUARE
+0812   551D 26 18               BNE P2
+0813   551F 96 81               LDAA SQUARE
+0814   5521 90 86               SUBA PFWD
+0815   5523 16                  TAB
+0816   5524 CE 7C C0            LDX #MAIL
+0817   5527 3A                  ABX
+0818   5528 A6 00               LDAA 0,X
+0819   552A 27 0B               BEQ P2
+0820   552C 84 2F               ANDA #$2F
+0821   552E 97 8D               STAA CAPID
+0822   5530 86 01               LDAA #1
+0823   5532 97 8C               STAA VFLAG
+0824   5534 BD 51 3D            JSR EMIT
+0825   5537 BD 51 11    P2:     JSR RESET
+0826   553A 7A 00 82            DEC MOVEN
+0827   553D 96 82               LDAA MOVEN
+0828   553F 81 05               CMPA #5
+0829   5541 27 BE               BEQ P1
+0830   5543 BD 50 E8    P3:     JSR CMOVE
+0831   5546 4D                  TSTA
+0832   5547 26 0E               BNE P3END
+0833   5549 7F 00 8C            CLR VFLAG
+0834   554C BD 51 3D            JSR EMIT
+0835   554F 96 81               LDAA SQUARE
+0836   5551 84 F0               ANDA #$F0
+0837   5553 91 87               CMPA DBLR
+0838   5555 27 EC               BEQ P3
+0839   5557 7E 54 8C    P3END:  JMP NEWP
+0840   555A             
+0841   555A BD 50 E8    SNGMV:  JSR CMOVE
+0842   555D 4D                  TSTA
+0843   555E 27 0A               BEQ SN_E
+0844   5560 81 02               CMPA #2
+0845   5562 27 0C               BEQ SN_X
+0846   5564 86 01               LDAA #1
+0847   5566 97 8C               STAA VFLAG
+0848   5568 20 03               BRA SN_EM
+0849   556A 7F 00 8C    SN_E:   CLR VFLAG
+0850   556D BD 51 3D    SN_EM:  JSR EMIT
+0851   5570 BD 51 11    SN_X:   JSR RESET
+0852   5573 7A 00 82            DEC MOVEN
+0853   5576 39                  RTS
+0854   5577             
+0855   5577 BD 50 E8    LINE:   JSR CMOVE
+0856   557A 4D                  TSTA
+0857   557B 27 0D               BEQ LN_E
+0858   557D 81 02               CMPA #2
+0859   557F 27 11               BEQ LN_END
+0860   5581 86 01               LDAA #1
+0861   5583 97 8C               STAA VFLAG
+0862   5585 BD 51 3D            JSR EMIT
+0863   5588 20 08               BRA LN_END
+0864   558A 7F 00 8C    LN_E:   CLR VFLAG
+0865   558D BD 51 3D            JSR EMIT
+0866   5590 20 E5               BRA LINE
+0867   5592 BD 51 11    LN_END: JSR RESET
+0868   5595 7A 00 82            DEC MOVEN
+0869   5598 39                  RTS
+0870   5599             
+0871   5599             ; ---------------------------------------------------------------------
+0872   5599             ;  castling candidates (king piece only, called after its 8 steps)
+0873   5599             ; ---------------------------------------------------------------------
+0874   5599             CASTLES:
+0875   5599 7D 00 83            TST STATE
+0876   559C 2B 51               BMI CA_RET
+0877   559E D6 84               LDAB MYC
+0878   55A0 CE 7C 90            LDX #MOVED
+0879   55A3 3A                  ABX
+0880   55A4 A6 00               LDAA 0,X
+0881   55A6 26 47               BNE CA_RET              ; king has moved
+0882   55A8 D6 84               LDAB MYC
+0883   55AA CE 7C 00            LDX #SQ
+0884   55AD 3A                  ABX
+0885   55AE A6 00               LDAA 0,X
+0886   55B0 C6 04               LDAB #$04
+0887   55B2 7D 00 84            TST MYC
+0888   55B5 27 02               BEQ CA_H
+0889   55B7 C6 74               LDAB #$74
+0890   55B9 D7 B1       CA_H:   STAB CKH
+0891   55BB 11                  CBA
+0892   55BC 26 31               BNE CA_RET              ; king not on its home square
+0893   55BE 86 01               LDAA #1                 ; king side
+0894   55C0 97 AB               STAA CAD
+0895   55C2 86 03               LDAA #3
+0896   55C4 9A 84               ORAA MYC
+0897   55C6 97 AC               STAA CAID
+0898   55C8 96 B1               LDAA CKH
+0899   55CA 8B 03               ADDA #3
+0900   55CC 97 AD               STAA CAR
+0901   55CE 86 02               LDAA #2
+0902   55D0 97 AE               STAA CAN
+0903   55D2 BD 55 F0            JSR CA_TRY
+0904   55D5 86 FF               LDAA #$FF               ; queen side
+0905   55D7 97 AB               STAA CAD
+0906   55D9 86 02               LDAA #2
+0907   55DB 9A 84               ORAA MYC
+0908   55DD 97 AC               STAA CAID
+0909   55DF 96 B1               LDAA CKH
+0910   55E1 80 04               SUBA #4
+0911   55E3 97 AD               STAA CAR
+0912   55E5 86 03               LDAA #3
+0913   55E7 97 AE               STAA CAN
+0914   55E9 BD 55 F0            JSR CA_TRY
+0915   55EC 7F 00 80            CLR PIECE
+0916   55EF 39          CA_RET: RTS
+0917   55F0 D6 AC       CA_TRY: LDAB CAID
+0918   55F2 CE 7C 90            LDX #MOVED
+0919   55F5 3A                  ABX
+0920   55F6 A6 00               LDAA 0,X
+0921   55F8 26 5D               BNE CT_RET              ; rook has moved
+0922   55FA D6 AC               LDAB CAID
+0923   55FC CE 7C 00            LDX #SQ
+0924   55FF 3A                  ABX
+0925   5600 A6 00               LDAA 0,X
+0926   5602 91 AD               CMPA CAR
+0927   5604 26 51               BNE CT_RET              ; rook not at home
+0928   5606 96 B1               LDAA CKH
+0929   5608 97 AF               STAA CAQ
+0930   560A 96 AE               LDAA CAN
+0931   560C 97 B0               STAA CAC
+0932   560E 96 AF       CT_E:   LDAA CAQ
+0933   5610 9B AB               ADDA CAD
+0934   5612 97 AF               STAA CAQ
+0935   5614 16                  TAB
+0936   5615 CE 7C C0            LDX #MAIL
+0937   5618 3A                  ABX
+0938   5619 6D 00               TST 0,X
+0939   561B 26 3A               BNE CT_RET              ; square between is occupied
+0940   561D 7A 00 B0            DEC CAC
+0941   5620 26 EC               BNE CT_E
+0942   5622 96 85               LDAA OPC
+0943   5624 D6 B1               LDAB CKH
+0944   5626 BD 53 B7            JSR ATTACKED
+0945   5629 26 2C               BNE CT_RET              ; king in check
+0946   562B 96 B1               LDAA CKH
+0947   562D 9B AB               ADDA CAD
+0948   562F 16                  TAB
+0949   5630 96 85               LDAA OPC
+0950   5632 BD 53 B7            JSR ATTACKED
+0951   5635 26 20               BNE CT_RET              ; passes through attacked square
+0952   5637 96 B1               LDAA CKH
+0953   5639 9B AB               ADDA CAD
+0954   563B 9B AB               ADDA CAD
+0955   563D 97 81               STAA SQUARE
+0956   563F 16                  TAB
+0957   5640 96 85               LDAA OPC
+0958   5642 BD 53 B7            JSR ATTACKED
+0959   5645 26 10               BNE CT_RET              ; lands on attacked square
+0960   5647 7F 00 80            CLR PIECE
+0961   564A 86 40               LDAA #$40
+0962   564C 97 82               STAA MOVEN
+0963   564E 7F 00 8C            CLR VFLAG
+0964   5651 BD 56 58            JSR JANUS
+0965   5654 7F 00 80            CLR PIECE
+0966   5657 39          CT_RET: RTS
+0967   5658             
+0968   5658             ; ---------------------------------------------------------------------
+0969   5658             ;  JANUS: count / evaluate a generated move  (PIECE, SQUARE, VFLAG, CAPID)
+0970   5658             ; ---------------------------------------------------------------------
+0971   5658 7D 00 90    JANUS:  TST LISTMODE
+0972   565B 27 03               BEQ JN_GO
+0973   565D 7E 58 00            JMP LIST_ADD
+0974   5660 96 83       JN_GO:  LDAA STATE
+0975   5662 2B 35               BMI JN_TREE
+0976   5664 CE 7D 45            LDX #CNTS
+0977   5667 16                  TAB
+0978   5668 3A                  ABX                     ; X -> MOB[STATE]
+0979   5669 6C 00               INC 0,X
+0980   566B 96 80               LDAA PIECE
+0981   566D 81 01               CMPA #1
+0982   566F 26 02               BNE JN_NQ
+0983   5671 6C 00               INC 0,X                 ; queen counts twice
+0984   5673 7D 00 8C    JN_NQ:  TST VFLAG
+0985   5676 27 18               BEQ JN_NC
+0986   5678 D6 8D               LDAB CAPID
+0987   567A 3C                  PSHX
+0988   567B CE 7C 60            LDX #PVAL
+0989   567E 3A                  ABX
+0990   567F A6 00               LDAA 0,X
+0991   5681 38                  PULX
+0992   5682 97 94               STAA PTS
+0993   5684 A1 01               CMPA 1,X                ; MAXC
+0994   5686 25 02               BCS JN_LS
+0995   5688 A7 01               STAA 1,X
+0996   568A 96 94       JN_LS:  LDAA PTS
+0997   568C AB 02               ADDA 2,X                ; CC
+0998   568E A7 02               STAA 2,X
+0999   5690 96 83       JN_NC:  LDAA STATE
+1000   5692 27 05               BEQ JN_TREE
+1001   5694 81 04               CMPA #4
+1002   5696 27 48               BEQ ON4
+1003   5698 39                  RTS
+1004   5699 7D 00 8C    JN_TREE: TST VFLAG
+1005   569C 27 32               BEQ TR_RET
+1006   569E 96 8D               LDAA CAPID              ; capture of a piece idx 1..7 only
+1007   56A0 84 0F               ANDA #$0F
+1008   56A2 27 2C               BEQ TR_RET
+1009   56A4 81 08               CMPA #8
+1010   56A6 24 28               BCC TR_RET
+1011   56A8 D6 8D               LDAB CAPID
+1012   56AA CE 7C 60            LDX #PVAL
+1013   56AD 3A                  ABX
+1014   56AE A6 00               LDAA 0,X
+1015   56B0 97 94               STAA PTS
+1016   56B2 D6 83               LDAB STATE
+1017   56B4 50                  NEGB
+1018   56B5 CE 7D 40            LDX #CAPS
+1019   56B8 3A                  ABX
+1020   56B9 96 94               LDAA PTS
+1021   56BB A1 00               CMPA 0,X
+1022   56BD 25 02               BCS TR_NM
+1023   56BF A7 00               STAA 0,X
+1024   56C1 7A 00 83    TR_NM:  DEC STATE
+1025   56C4 96 83               LDAA STATE
+1026   56C6 81 FB               CMPA #$FB
+1027   56C8 27 03               BEQ TR_UP
+1028   56CA BD 56 D1            JSR GENRM
+1029   56CD 7C 00 83    TR_UP:  INC STATE
+1030   56D0 39          TR_RET: RTS
+1031   56D1 BD 51 46    GENRM:  JSR MOVE
+1032   56D4 BD 50 31            JSR REVERSE
+1033   56D7 BD 54 88            JSR GNM
+1034   56DA BD 50 31            JSR REVERSE
+1035   56DD 7E 52 BD            JMP UMOVE
+1036   56E0             
+1037   56E0 B6 7D 4A    ON4:    LDAA XMAXC
+1038   56E3 97 9F               STAA WCAP0
+1039   56E5 7F 00 83            CLR STATE
+1040   56E8 BD 51 46            JSR MOVE
+1041   56EB BD 50 31            JSR REVERSE
+1042   56EE BD 54 7C            JSR GNMZ
+1043   56F1 BD 50 31            JSR REVERSE
+1044   56F4 86 08               LDAA #8
+1045   56F6 97 83               STAA STATE
+1046   56F8 BD 52 BD            JSR UMOVE
+1047   56FB             STRATGY:
+1048   56FB 86 80               LDAA #$80
+1049   56FD BB 7D 4D            ADDA WMOB
+1050   5700 B9 7D 4E            ADCA WMAXC
+1051   5703 B9 7D 4F            ADCA WCC
+1052   5706 B9 7D 41            ADCA WCAP1
+1053   5709 B9 7D 43            ADCA WCAP2
+1054   570C B0 7D 52            SUBA PMAXC
+1055   570F B2 7D 53            SBCA PCC
+1056   5712 B2 7D 40            SBCA BCAP0
+1057   5715 B2 7D 42            SBCA BCAP1
+1058   5718 B2 7D 44            SBCA BCAP2
+1059   571B B2 7D 51            SBCA PMOB
+1060   571E B2 7D 45            SBCA BMOB
+1061   5721 24 01               BCC ST_POS
+1062   5723 4F                  CLRA
+1063   5724 44          ST_POS: LSRA
+1064   5725 8B 40               ADDA #$40
+1065   5727 B9 7D 4E            ADCA WMAXC
+1066   572A B9 7D 4F            ADCA WCC
+1067   572D B0 7D 46            SUBA BMAXC
+1068   5730 44                  LSRA
+1069   5731 8B 90               ADDA #$90
+1070   5733 99 9F               ADCA WCAP0
+1071   5735 99 9F               ADCA WCAP0
+1072   5737 99 9F               ADCA WCAP0
+1073   5739 99 9F               ADCA WCAP0
+1074   573B B9 7D 41            ADCA WCAP1
+1075   573E B0 7D 46            SUBA BMAXC
+1076   5741 B2 7D 46            SBCA BMAXC
+1077   5744 B2 7D 47            SBCA BMCC
+1078   5747 B2 7D 47            SBCA BMCC
+1079   574A B2 7D 42            SBCA BCAP1
+1080   574D 97 A3               STAA SCORE
+1081   574F 96 81               LDAA SQUARE
+1082   5751 7D 00 84            TST MYC
+1083   5754 27 05               BEQ ST_R1
+1084   5756 C6 77               LDAB #$77
+1085   5758 D0 81               SUBB SQUARE
+1086   575A 17                  TBA
+1087   575B 81 33       ST_R1:  CMPA #$33
+1088   575D 27 29               BEQ ST_BON
+1089   575F 81 34               CMPA #$34
+1090   5761 27 25               BEQ ST_BON
+1091   5763 81 22               CMPA #$22
+1092   5765 27 21               BEQ ST_BON
+1093   5767 81 25               CMPA #$25
+1094   5769 27 1D               BEQ ST_BON
+1095   576B 7D 00 80            TST PIECE
+1096   576E 27 1E               BEQ ST_CK
+1097   5770 CE 7C 00            LDX #SQ
+1098   5773 D6 84               LDAB MYC
+1099   5775 DA 80               ORAB PIECE
+1100   5777 3A                  ABX
+1101   5778 A6 00               LDAA 0,X
+1102   577A 7D 00 84            TST MYC
+1103   577D 27 05               BEQ ST_R2
+1104   577F C6 77               LDAB #$77
+1105   5781 E0 00               SUBB 0,X
+1106   5783 17                  TBA
+1107   5784 81 10       ST_R2:  CMPA #$10
+1108   5786 24 06               BCC ST_CK
+1109   5788 96 A3       ST_BON: LDAA SCORE
+1110   578A 8B 02               ADDA #2
+1111   578C 97 A3               STAA SCORE
+1112   578E 96 82       ST_CK:  LDAA MOVEN              ; castling bonus (root move flagged $40)
+1113   5790 81 40               CMPA #$40
+1114   5792 26 0A               BNE CKMATE
+1115   5794 96 A3               LDAA SCORE
+1116   5796 8B 0C               ADDA #CBONUS
+1117   5798 24 02               BCC ST_CB
+1118   579A 86 FE               LDAA #$FE
+1119   579C 97 A3       ST_CB:  STAA SCORE
+1120   579E 96 A3       CKMATE: LDAA SCORE
+1121   57A0 F6 7D 46            LDAB BMAXC
+1122   57A3 C1 0B               CMPB #$0B
+1123   57A5 26 03               BNE CK_N
+1124   57A7 4F                  CLRA
+1125   57A8 20 0C               BRA RETV
+1126   57AA 7D 7D 45    CK_N:   TST BMOB
+1127   57AD 26 07               BNE RETV
+1128   57AF 7D 7D 50            TST WMAXP
+1129   57B2 26 02               BNE RETV
+1130   57B4 86 FF               LDAA #$FF
+1131   57B6 C6 04       RETV:   LDAB #4
+1132   57B8 D7 83               STAB STATE
+1133   57BA 91 A0               CMPA BESTV
+1134   57BC 23 0A               BLS RETP
+1135   57BE 97 A0               STAA BESTV
+1136   57C0 D6 80               LDAB PIECE
+1137   57C2 D7 A1               STAB BESTP
+1138   57C4 D6 81               LDAB SQUARE
+1139   57C6 D7 A2               STAB BESTM
+1140   57C8 39          RETP:   RTS
+1141   57C9             
+1142   57C9 7F 00 B2    GO:     CLR SEARCHOK
+1143   57CC 86 0C               LDAA #$0C
+1144   57CE 97 83               STAA STATE
+1145   57D0 97 A0               STAA BESTV
+1146   57D2 BD 54 75            JSR GNMX
+1147   57D5 86 04               LDAA #4
+1148   57D7 97 83               STAA STATE
+1149   57D9 BD 54 7C            JSR GNMZ
+1150   57DC 96 A0               LDAA BESTV
+1151   57DE 81 0F               CMPA #$0F
+1152   57E0 25 04               BCS GO_NO
+1153   57E2 86 01               LDAA #1
+1154   57E4 97 B2               STAA SEARCHOK
+1155   57E6 39          GO_NO:  RTS
+1156   57E7             
+1157   57E7             ; ---------------------------------------------------------------------
+1158   57E7             ;  legal move list for the side to move: returns count in A, pairs in MLIST
+1159   57E7             ; ---------------------------------------------------------------------
+1160   57E7             LISTMOVES:
+1161   57E7 CE 7E 60            LDX #MLIST
+1162   57EA DF 91               STX LISTPTR
+1163   57EC 7F 00 93            CLR LISTCNT
+1164   57EF 86 01               LDAA #1
+1165   57F1 97 90               STAA LISTMODE
+1166   57F3 86 04               LDAA #4
+1167   57F5 97 83               STAA STATE
+1168   57F7 BD 54 88            JSR GNM
+1169   57FA 7F 00 90            CLR LISTMODE
+1170   57FD 96 93               LDAA LISTCNT
+1171   57FF 39                  RTS
+1172   5800             LIST_ADD:
+1173   5800 CE 7C 00            LDX #SQ
+1174   5803 D6 84               LDAB MYC
+1175   5805 DA 80               ORAB PIECE
+1176   5807 3A                  ABX
+1177   5808 A6 00               LDAA 0,X
+1178   580A DE 91               LDX LISTPTR
+1179   580C A7 00               STAA 0,X
+1180   580E 96 81               LDAA SQUARE
+1181   5810 A7 01               STAA 1,X
+1182   5812 08                  INX
+1183   5813 08                  INX
+1184   5814 DF 91               STX LISTPTR
+1185   5816 7C 00 93            INC LISTCNT
+1186   5819 39                  RTS
+1187   581A             
+1188   581A             ; ---------------------------------------------------------------------
+1189   581A             ;  tables
+1190   581A             ; ---------------------------------------------------------------------
+1191   581A 00F0FF0110110FEFMOVEX0: .BYTE $00,$F0,$FF,$01,$10,$11,$0F,$EF,$F1
+1191   5822 F1          
+1192   5823 DFE1EEF2120E1F21        .BYTE $DF,$E1,$EE,$F2,$12,$0E,$1F,$21
+1193   582B 001001FFF0EFF111MOVEX1: .BYTE $00,$10,$01,$FF,$F0,$EF,$F1,$11,$0F
+1193   5833 0F          
+1194   5834 211F120EEEF2E1DF        .BYTE $21,$1F,$12,$0E,$EE,$F2,$E1,$DF
+1195   583C 01FF10F00FF111EFRAYDIR: .BYTE $01,$FF,$10,$F0,$0F,$F1,$11,$EF
+1196   5844 0403000702050106SETW:   .BYTE $04,$03,$00,$07,$02,$05,$01,$06
+1197   584C 1017111612151413        .BYTE $10,$17,$11,$16,$12,$15,$14,$13
+1198   5854 7473707772757176SETB:   .BYTE $74,$73,$70,$77,$72,$75,$71,$76
+1199   585C 6067616662656463        .BYTE $60,$67,$61,$66,$62,$65,$64,$63
+1200   5864 0803010102020404TYPEINIT: .BYTE $08,$03,$01,$01,$02,$02,$04,$04
+1201   586C 1010101010101010        .BYTE $10,$10,$10,$10,$10,$10,$10,$10
+1202   5874 0B0A060604040404POINTS: .BYTE $0B,$0A,$06,$06,$04,$04,$04,$04
+1203   587C 0202020202020202        .BYTE $02,$02,$02,$02,$02,$02,$02,$02
+1204   5884             ; ======================================================================
+1205   5884             ;  USER INTERFACE : 128x96 4-colour (CG3) board, sprites, 3x5 font,
+1206   5884             ;  keyboard scanner, game flow
+1207   5884             ; ======================================================================
+1208   5884             HUMAN   .EQU $B8        ; $00 = you play White, $20 = you play Black
+1209   5884             FLIP    .EQU $B9        ; 1 = board drawn from Black's side
+1210   5884             LASTF   .EQU $BA        ; last move from/to (abs 0x88) for highlight, $FF none
+1211   5884             LASTT   .EQU $BB
+1212   5884             INLEN   .EQU $BC        ; characters typed so far (0-4)
+1213   5884             INBUF   .EQU $BD        ; 4 bytes
+1214   5884             HLF     .EQU $C1        ; square highlighted while typing ($FF none)
+1215   5884             GSTATE  .EQU $C2
+1216   5884             TCOL    .EQU $C3        ; text cursor: byte column 0-31
+1217   5884             TROW    .EQU $C4        ;              pixel row 0-95
+1218   5884             FGB     .EQU $C5        ; text foreground/background colour bytes
+1219   5884             BGB     .EQU $C6
+1220   5884             TPTR    .EQU $C7        ; word
+1221   5884             DQ      .EQU $C9        ; square being drawn
+1222   5884             DSCR    .EQU $CA        ; word: screen pointer
+1223   5884             SQB0    .EQU $CC        ; square colour bytes (even / odd pixel rows)
+1224   5884             SQB1    .EQU $CD
+1225   5884             TMB     .EQU $CE        ; team colour byte
+1226   5884             SPRP    .EQU $CF        ; word: sprite pointer
+1227   5884             DROWS   .EQU $D1
+1228   5884             KEYC    .EQU $D2
+1229   5884             MCNT    .EQU $D3
+1230   5884             U1      .EQU $D4
+1231   5884             U2      .EQU $D5
+1232   5884             U3      .EQU $D6
+1233   5884             R0      .EQU $D7
+1234   5884             R1      .EQU $D8
+1235   5884             R2      .EQU $D9
+1236   5884             MSGID   .EQU $DA
+1237   5884             FROMF   .EQU $DB
+1238   5884             TOF     .EQU $DC
+1239   5884             CTRLF   .EQU $DD
+1240   5884             LBLI    .EQU $DE
+1241   5884             CHKF    .EQU $DF
+1242   5884             GKC     .EQU $E0
+1243   5884             LASTK   .EQU $E1
+1244   5884             
+1245   5884             HTXT    .EQU RAM+$470   ; "U:E2E4",0
+1246   5884             CTXT    .EQU RAM+$478   ; "C:E7E5",0
+1247   5884             INTXT   .EQU RAM+$480   ; typed move echo
+1248   5884             
+1249   5884             GFXMODE .EQU $24        ; CG3 128x96x4, CSS0 palette (green/yellow/blue/red)
+1250   5884             TXTMODE .EQU $00        ; (verified against ROM at test time)
+1251   5884             C_YEL   .EQU $55
+1252   5884             C_RED   .EQU $FF
+1253   5884             C_BLU   .EQU $AA
+1254   5884             C_GRN   .EQU $00
+1255   5884             
+1256   5884             ; ---------------------------------------------------------------------
+1257   5884             ;  program entry
+1258   5884             ; ---------------------------------------------------------------------
+1259   5884 0F          START:  SEI
+1260   5885 7F 00 E1            CLR LASTK
+1261   5888 8E 8F FF            LDS #$8FFF
+1262   588B 86 FF               LDAA #$FF
+1263   588D 97 00               STAA $00                ; port 1 = keyboard strobe outputs
+1264   588F 86 24               LDAA #GFXMODE
+1265   5891 B7 BF FF            STAA $BFFF
+1266   5894 BD 5E 0F    TITLE:  JSR TITLESCR
+1267   5897 BD 50 49    NEWGAME: JSR NEWPOS
+1268   589A 86 FF               LDAA #$FF
+1269   589C 97 BA               STAA LASTF
+1270   589E 97 BB               STAA LASTT
+1271   58A0 97 C1               STAA HLF
+1272   58A2 7F 00 BC            CLR INLEN
+1273   58A5 7F 00 C2            CLR GSTATE
+1274   58A8 96 B8               LDAA HUMAN
+1275   58AA 27 02               BEQ NG_F
+1276   58AC 86 01               LDAA #1
+1277   58AE 97 B9       NG_F:   STAA FLIP
+1278   58B0 7F 00 C6            CLR BGB
+1279   58B3 BD 5B 6D            JSR CLS
+1280   58B6 CE 80 70            LDX #HTXT
+1281   58B9 BD 5A C4            JSR INITTXT
+1282   58BC CE 80 78            LDX #CTXT
+1283   58BF BD 5A C4            JSR INITTXT
+1284   58C2 86 43               LDAA #$43
+1285   58C4 B7 80 78            STAA CTXT
+1286   58C7 BD 5C ED            JSR DRAWSTATIC
+1287   58CA BD 5C D5            JSR DRAWBOARD
+1288   58CD BD 5D 91            JSR DRAWMOVES
+1289   58D0 BD 57 E7    GLOOP:  JSR LISTMOVES
+1290   58D3 97 D3               STAA MCNT
+1291   58D5 26 2D               BNE GL_HAVE
+1292   58D7 BD 54 68            JSR INCHECK             ; no legal moves: mate or stalemate
+1293   58DA 4D                  TSTA
+1294   58DB 27 0E               BEQ GL_STALE
+1295   58DD 96 84               LDAA MYC
+1296   58DF 91 B8               CMPA HUMAN
+1297   58E1 27 04               BEQ GL_LOSE
+1298   58E3 86 04               LDAA #4                 ; you win
+1299   58E5 20 06               BRA GL_END
+1300   58E7 86 05       GL_LOSE: LDAA #5
+1301   58E9 20 02               BRA GL_END
+1302   58EB 86 06       GL_STALE: LDAA #6
+1303   58ED 97 DA       GL_END: STAA MSGID
+1304   58EF BD 5D DD            JSR STATUS
+1305   58F2 86 01               LDAA #1
+1306   58F4 97 C2               STAA GSTATE
+1307   58F6 BD 5B 3F    GL_WAIT: JSR GETKEY
+1308   58F9 81 4E               CMPA #$4E               ; N
+1309   58FB 27 97               BEQ TITLE
+1310   58FD 81 51               CMPA #$51               ; Q
+1311   58FF 26 F5               BNE GL_WAIT
+1312   5901 7E 5A 6C            JMP QUIT
+1313   5904 BD 54 68    GL_HAVE: JSR INCHECK
+1314   5907 97 DF               STAA CHKF
+1315   5909 96 84               LDAA MYC
+1316   590B 91 B8               CMPA HUMAN
+1317   590D 27 45               BEQ HUMANTURN
+1318   590F             ; ------------------------------------------------------------------ CPU
+1319   590F 86 01       CPUTURN: LDAA #1
+1320   5911 7D 00 DF            TST CHKF
+1321   5914 27 02               BEQ CT_M
+1322   5916 86 07               LDAA #7
+1323   5918 97 DA       CT_M:   STAA MSGID
+1324   591A BD 5D DD            JSR STATUS
+1325   591D BD 57 C9            JSR GO
+1326   5920 7D 00 B2            TST SEARCHOK
+1327   5923 27 12               BEQ CT_FB
+1328   5925 D6 84               LDAB MYC                ; best piece's from-square
+1329   5927 DA A1               ORAB BESTP
+1330   5929 CE 7C 00            LDX #SQ
+1331   592C 3A                  ABX
+1332   592D A6 00               LDAA 0,X
+1333   592F 97 DB               STAA FROMF
+1334   5931 96 A2               LDAA BESTM
+1335   5933 97 DC               STAA TOF
+1336   5935 20 0B               BRA CT_GO
+1337   5937 CE 7E 60    CT_FB:  LDX #MLIST              ; evaluator would resign: play first legal move
+1338   593A A6 00               LDAA 0,X
+1339   593C 97 DB               STAA FROMF
+1340   593E A6 01               LDAA 1,X
+1341   5940 97 DC               STAA TOF
+1342   5942 BD 5A 76    CT_GO:  JSR DOMOVE
+1343   5945 CE 80 7A            LDX #CTXT+2
+1344   5948 BD 5A A5            JSR SETTXT
+1345   594B BD 5C D5            JSR DRAWBOARD
+1346   594E BD 5D 91            JSR DRAWMOVES
+1347   5951 7E 58 D0            JMP GLOOP
+1348   5954             ; ------------------------------------------------------------------ human
+1349   5954 86 00       HUMANTURN: LDAA #0
+1350   5956 7D 00 DF            TST CHKF
+1351   5959 27 02               BEQ HT_M
+1352   595B 86 02               LDAA #2
+1353   595D 97 DA       HT_M:   STAA MSGID
+1354   595F BD 5D DD            JSR STATUS
+1355   5962 7F 00 BC            CLR INLEN
+1356   5965 86 FF               LDAA #$FF
+1357   5967 97 C1               STAA HLF
+1358   5969 BD 5D A9            JSR DRAWINPUT
+1359   596C BD 5B 3F    HT_KEY: JSR GETKEY
+1360   596F 81 4E               CMPA #$4E
+1361   5971 27 57               BEQ HT_NEW
+1362   5973 81 51               CMPA #$51
+1363   5975 26 03               BNE HT_K2
+1364   5977 7E 5A 6C            JMP QUIT
+1365   597A 81 1B       HT_K2:  CMPA #27
+1366   597C 27 4F               BEQ HT_CLR
+1367   597E 81 08               CMPA #8
+1368   5980 27 56               BEQ HT_BS
+1369   5982 81 30               CMPA #$30
+1370   5984 27 52               BEQ HT_BS
+1371   5986 81 0D               CMPA #13
+1372   5988 27 60               BEQ HT_ENT
+1373   598A D6 BC               LDAB INLEN
+1374   598C C1 04               CMPB #4
+1375   598E 24 DC               BCC HT_KEY
+1376   5990 97 D4               STAA U1                 ; candidate character
+1377   5992 C5 01               BITB #1
+1378   5994 26 0A               BNE HT_RANK
+1379   5996 81 41               CMPA #$41               ; file A-H
+1380   5998 25 D2               BCS HT_KEY
+1381   599A 81 49               CMPA #$49
+1382   599C 24 CE               BCC HT_KEY
+1383   599E 20 08               BRA HT_ADD
+1384   59A0 81 31       HT_RANK: CMPA #$31              ; rank 1-8
+1385   59A2 25 C8               BCS HT_KEY
+1386   59A4 81 39               CMPA #$39
+1387   59A6 24 C4               BCC HT_KEY
+1388   59A8 CE 00 BD    HT_ADD: LDX #INBUF
+1389   59AB 3A                  ABX
+1390   59AC 96 D4               LDAA U1
+1391   59AE A7 00               STAA 0,X
+1392   59B0 7C 00 BC            INC INLEN
+1393   59B3 96 BC               LDAA INLEN
+1394   59B5 81 02               CMPA #2
+1395   59B7 26 0C               BNE HT_REDR
+1396   59B9 BD 5A 59            JSR PARSEFROM           ; highlight the from-square
+1397   59BC 96 DB               LDAA FROMF
+1398   59BE 97 C1               STAA HLF
+1399   59C0 97 C9               STAA DQ
+1400   59C2 BD 5C 34            JSR DRAWSQ
+1401   59C5 BD 5D A9    HT_REDR: JSR DRAWINPUT
+1402   59C8 20 A2               BRA HT_KEY
+1403   59CA 7E 58 94    HT_NEW: JMP TITLE
+1404   59CD BD 5A 49    HT_CLR: JSR UNHL
+1405   59D0 7F 00 BC            CLR INLEN
+1406   59D3 BD 5D A9            JSR DRAWINPUT
+1407   59D6 20 94               BRA HT_KEY
+1408   59D8 96 BC       HT_BS:  LDAA INLEN
+1409   59DA 27 90               BEQ HT_KEY
+1410   59DC 7A 00 BC            DEC INLEN
+1411   59DF 96 BC               LDAA INLEN
+1412   59E1 81 01               CMPA #1
+1413   59E3 26 E0               BNE HT_REDR
+1414   59E5 BD 5A 49            JSR UNHL
+1415   59E8 20 DB               BRA HT_REDR
+1416   59EA 96 BC       HT_ENT: LDAA INLEN
+1417   59EC 81 04               CMPA #4
+1418   59EE 27 03               BEQ HT_E2
+1419   59F0 7E 59 6C            JMP HT_KEY
+1420   59F3             HT_E2:
+1421   59F3 BD 5A 49            JSR UNHL
+1422   59F6 BD 5A 59            JSR PARSEFROM
+1423   59F9 96 BF               LDAA INBUF+2
+1424   59FB 80 41               SUBA #$41
+1425   59FD 97 D4               STAA U1
+1426   59FF 96 C0               LDAA INBUF+3
+1427   5A01 80 31               SUBA #$31
+1428   5A03 48                  ASLA
+1429   5A04 48                  ASLA
+1430   5A05 48                  ASLA
+1431   5A06 48                  ASLA
+1432   5A07 9A D4               ORAA U1
+1433   5A09 97 DC               STAA TOF
+1434   5A0B CE 7E 60            LDX #MLIST              ; is it in the legal list?
+1435   5A0E D6 D3               LDAB MCNT
+1436   5A10 A6 00       HT_FND: LDAA 0,X
+1437   5A12 91 DB               CMPA FROMF
+1438   5A14 26 06               BNE HT_NX
+1439   5A16 A6 01               LDAA 1,X
+1440   5A18 91 DC               CMPA TOF
+1441   5A1A 27 15               BEQ HT_OK
+1442   5A1C 08          HT_NX:  INX
+1443   5A1D 08                  INX
+1444   5A1E 5A                  DECB
+1445   5A1F 26 EF               BNE HT_FND
+1446   5A21 86 03               LDAA #3                 ; not legal
+1447   5A23 97 DA               STAA MSGID
+1448   5A25 BD 5D DD            JSR STATUS
+1449   5A28 7F 00 BC            CLR INLEN
+1450   5A2B BD 5D A9            JSR DRAWINPUT
+1451   5A2E 7E 59 6C            JMP HT_KEY
+1452   5A31 BD 5A 76    HT_OK:  JSR DOMOVE
+1453   5A34 CE 80 72            LDX #HTXT+2
+1454   5A37 BD 5A A5            JSR SETTXT
+1455   5A3A 7F 00 BC            CLR INLEN
+1456   5A3D BD 5D A9            JSR DRAWINPUT
+1457   5A40 BD 5C D5            JSR DRAWBOARD
+1458   5A43 BD 5D 91            JSR DRAWMOVES
+1459   5A46 7E 58 D0            JMP GLOOP
+1460   5A49 96 C1       UNHL:   LDAA HLF
+1461   5A4B 81 FF               CMPA #$FF
+1462   5A4D 27 09               BEQ UH_R
+1463   5A4F 97 C9               STAA DQ
+1464   5A51 86 FF               LDAA #$FF
+1465   5A53 97 C1               STAA HLF
+1466   5A55 BD 5C 34            JSR DRAWSQ
+1467   5A58 39          UH_R:   RTS
+1468   5A59             PARSEFROM:
+1469   5A59 96 BD               LDAA INBUF
+1470   5A5B 80 41               SUBA #$41
+1471   5A5D 97 D4               STAA U1
+1472   5A5F 96 BE               LDAA INBUF+1
+1473   5A61 80 31               SUBA #$31
+1474   5A63 48                  ASLA
+1475   5A64 48                  ASLA
+1476   5A65 48                  ASLA
+1477   5A66 48                  ASLA
+1478   5A67 9A D4               ORAA U1
+1479   5A69 97 DB               STAA FROMF
+1480   5A6B 39                  RTS
+1481   5A6C 86 00       QUIT:   LDAA #TXTMODE
+1482   5A6E B7 BF FF            STAA $BFFF
+1483   5A71 FE FF FE            LDX $FFFE               ; cold start BASIC
+1484   5A74 6E 00               JMP 0,X
+1485   5A76             
+1486   5A76             ; ---------------------------------------------------------------------
+1487   5A76             ;  DOMOVE: play FROMF -> TOF for the side to move, switch sides.
+1488   5A76             ; ---------------------------------------------------------------------
+1489   5A76 D6 84       DOMOVE: LDAB MYC
+1490   5A78 CE 7C 00            LDX #SQ
+1491   5A7B 3A                  ABX
+1492   5A7C 5F                  CLRB                    ; find piece index standing on FROMF
+1493   5A7D A6 00       DM_F:   LDAA 0,X
+1494   5A7F 91 DB               CMPA FROMF
+1495   5A81 27 06               BEQ DM_G
+1496   5A83 08                  INX
+1497   5A84 5C                  INCB
+1498   5A85 C1 10               CMPB #16
+1499   5A87 26 F4               BNE DM_F
+1500   5A89 D7 80       DM_G:   STAB PIECE
+1501   5A8B 96 DC               LDAA TOF
+1502   5A8D 97 81               STAA SQUARE
+1503   5A8F 7F 00 82            CLR MOVEN
+1504   5A92 BD 51 46            JSR MOVE
+1505   5A95 CE 7D 60            LDX #USTACK
+1506   5A98 DF 8E               STX UPTR
+1507   5A9A 96 DB               LDAA FROMF
+1508   5A9C 97 BA               STAA LASTF
+1509   5A9E 96 DC               LDAA TOF
+1510   5AA0 97 BB               STAA LASTT
+1511   5AA2 7E 50 31            JMP REVERSE
+1512   5AA5             ; X -> 4 chars, text of FROMF/TOF
+1513   5AA5 96 DB       SETTXT: LDAA FROMF
+1514   5AA7 BD 5A B8            JSR SQCH
+1515   5AAA A7 00               STAA 0,X
+1516   5AAC E7 01               STAB 1,X
+1517   5AAE 96 DC               LDAA TOF
+1518   5AB0 BD 5A B8            JSR SQCH
+1519   5AB3 A7 02               STAA 2,X
+1520   5AB5 E7 03               STAB 3,X
+1521   5AB7 39                  RTS
+1522   5AB8 16          SQCH:   TAB                     ; A = square -> A file char, B rank char
+1523   5AB9 84 07               ANDA #7
+1524   5ABB 8B 41               ADDA #$41
+1525   5ABD 54                  LSRB
+1526   5ABE 54                  LSRB
+1527   5ABF 54                  LSRB
+1528   5AC0 54                  LSRB
+1529   5AC1 CB 31               ADDB #$31
+1530   5AC3 39                  RTS
+1531   5AC4 86 55       INITTXT: LDAA #$55              ; "U:----"
+1532   5AC6 A7 00               STAA 0,X
+1533   5AC8 86 3A               LDAA #$3A
+1534   5ACA A7 01               STAA 1,X
+1535   5ACC 86 2D               LDAA #$2D
+1536   5ACE A7 02               STAA 2,X
+1537   5AD0 A7 03               STAA 3,X
+1538   5AD2 A7 04               STAA 4,X
+1539   5AD4 A7 05               STAA 5,X
+1540   5AD6 6F 06               CLR 6,X
+1541   5AD8 39                  RTS
+1542   5AD9             
+1543   5AD9             ; ---------------------------------------------------------------------
+1544   5AD9             ;  keyboard
+1545   5AD9             ; ---------------------------------------------------------------------
+1546   5AD9             ;  SCAN: A = ASCII of a pressed key (letters, digits, ENTER=13, BREAK=27,
+1547   5AD9             ;        CTRL-A = 8) or 0.  Matrix: strobe a column low on port 1, read the
+1548   5AD9             ;        six row bits at $BFFF (active low).  CTRL/BREAK read via port 2.
+1549   5AD9 86 FE       SCAN:   LDAA #$FE               ; column 0 strobe: CTRL state
+1550   5ADB 97 02               STAA $02
+1551   5ADD 01                  NOP
+1552   5ADE 01                  NOP
+1553   5ADF D6 03               LDAB $03
+1554   5AE1 C4 02               ANDB #2
+1555   5AE3 D7 DD               STAB CTRLF              ; 0 = CTRL held
+1556   5AE5 86 FB               LDAA #$FB               ; column 2 strobe: BREAK state
+1557   5AE7 97 02               STAA $02
+1558   5AE9 01                  NOP
+1559   5AEA 01                  NOP
+1560   5AEB D6 03               LDAB $03
+1561   5AED C5 02               BITB #2
+1562   5AEF 26 03               BNE SC_NB
+1563   5AF1 86 1B               LDAA #27
+1564   5AF3 39                  RTS
+1565   5AF4 86 FE       SC_NB:  LDAA #$FE
+1566   5AF6 97 D5               STAA U2
+1567   5AF8 7F 00 D6            CLR U3
+1568   5AFB 96 D5       SC_COL: LDAA U2
+1569   5AFD 97 02               STAA $02
+1570   5AFF 01                  NOP
+1571   5B00 01                  NOP
+1572   5B01 B6 BF FF            LDAA $BFFF
+1573   5B04 43                  COMA
+1574   5B05 84 3F               ANDA #$3F
+1575   5B07 26 11               BNE SC_HIT
+1576   5B09 96 D5       SC_NX:  LDAA U2
+1577   5B0B 0D                  SEC
+1578   5B0C 49                  ROLA
+1579   5B0D 97 D5               STAA U2
+1580   5B0F 7C 00 D6            INC U3
+1581   5B12 D6 D6               LDAB U3
+1582   5B14 C1 08               CMPB #8
+1583   5B16 26 E3               BNE SC_COL
+1584   5B18 4F                  CLRA
+1585   5B19 39                  RTS
+1586   5B1A 5F          SC_HIT: CLRB                    ; B = row of lowest set bit
+1587   5B1B 44          SC_R:   LSRA
+1588   5B1C 25 03               BCS SC_F
+1589   5B1E 5C                  INCB
+1590   5B1F 20 FA               BRA SC_R
+1591   5B21 D7 D4       SC_F:   STAB U1                 ; row
+1592   5B23 96 D4               LDAA U1
+1593   5B25 48                  ASLA
+1594   5B26 48                  ASLA
+1595   5B27 48                  ASLA
+1596   5B28 9B D6               ADDA U3                 ; row*8+col
+1597   5B2A CE 5F DF            LDX #KEYTAB
+1598   5B2D 16                  TAB
+1599   5B2E 3A                  ABX
+1600   5B2F A6 00               LDAA 0,X
+1601   5B31 27 D6               BEQ SC_NX
+1602   5B33 7D 00 DD            TST CTRLF
+1603   5B36 26 06               BNE SC_R2
+1604   5B38 81 41               CMPA #$41               ; CTRL-A = backspace
+1605   5B3A 26 02               BNE SC_R2
+1606   5B3C 86 08               LDAA #8
+1607   5B3E 39          SC_R2:  RTS
+1608   5B3F 7F 00 E0    GETKEY: CLR GKC
+1609   5B42 BD 5A D9    GK_L:   JSR SCAN
+1610   5B45 4D                  TSTA
+1611   5B46 26 12               BNE GK_D
+1612   5B48 D6 E0               LDAB GKC                ; key up: after 8 empty scans forget last key
+1613   5B4A C1 08               CMPB #8
+1614   5B4C 24 F4               BCC GK_L
+1615   5B4E 5C                  INCB
+1616   5B4F D7 E0               STAB GKC
+1617   5B51 C1 08               CMPB #8
+1618   5B53 26 ED               BNE GK_L
+1619   5B55 7F 00 E1            CLR LASTK
+1620   5B58 20 E8               BRA GK_L
+1621   5B5A 7F 00 E0    GK_D:   CLR GKC
+1622   5B5D 91 E1               CMPA LASTK              ; still holding the previous key?
+1623   5B5F 27 E1               BEQ GK_L
+1624   5B61 97 D2               STAA KEYC
+1625   5B63 BD 5A D9            JSR SCAN                ; confirm
+1626   5B66 91 D2               CMPA KEYC
+1627   5B68 26 D8               BNE GK_L
+1628   5B6A 97 E1               STAA LASTK
+1629   5B6C 39                  RTS
+1630   5B6D             GETKEY_E:
+1631   5B6D             
+1632   5B6D             ; ---------------------------------------------------------------------
+1633   5B6D             ;  drawing
+1634   5B6D             ; ---------------------------------------------------------------------
+1635   5B6D CE 40 00    CLS:    LDX #$4000
+1636   5B70 96 C6               LDAA BGB
+1637   5B72 A7 00       CL_L:   STAA 0,X
+1638   5B74 08                  INX
+1639   5B75 8C 4C 00            CPX #$4C00
+1640   5B78 26 F8               BNE CL_L
+1641   5B7A 39                  RTS
+1642   5B7B             
+1643   5B7B             ; PUTC: A = ASCII ($20-$5F), draws 3x5 glyph at (TCOL,TROW) in FGB on BGB
+1644   5B7B 80 20       PUTC:   SUBA #$20
+1645   5B7D 81 40               CMPA #64
+1646   5B7F 25 01               BCS PC_OK
+1647   5B81 4F                  CLRA
+1648   5B82 C6 05       PC_OK:  LDAB #5
+1649   5B84 3D                  MUL
+1650   5B85 C3 61 71            ADDD #FONT
+1651   5B88 DD C7               STD TPTR
+1652   5B8A 96 C4               LDAA TROW
+1653   5B8C C6 20               LDAB #32
+1654   5B8E 3D                  MUL
+1655   5B8F C3 40 00            ADDD #$4000
+1656   5B92 DB C3               ADDB TCOL
+1657   5B94 DD CA               STD DSCR
+1658   5B96 86 05               LDAA #5
+1659   5B98 97 D4               STAA U1
+1660   5B9A DE C7       PC_L:   LDX TPTR
+1661   5B9C A6 00               LDAA 0,X
+1662   5B9E 08                  INX
+1663   5B9F DF C7               STX TPTR
+1664   5BA1 16                  TAB
+1665   5BA2 94 C5               ANDA FGB
+1666   5BA4 53                  COMB
+1667   5BA5 D4 C6               ANDB BGB
+1668   5BA7 1B                  ABA
+1669   5BA8 DE CA               LDX DSCR
+1670   5BAA A7 00               STAA 0,X
+1671   5BAC C6 20               LDAB #32
+1672   5BAE 3A                  ABX
+1673   5BAF DF CA               STX DSCR
+1674   5BB1 7A 00 D4            DEC U1
+1675   5BB4 26 E4               BNE PC_L
+1676   5BB6 96 C6               LDAA BGB
+1677   5BB8 DE CA               LDX DSCR
+1678   5BBA A7 00               STAA 0,X
+1679   5BBC 7C 00 C3            INC TCOL
+1680   5BBF 39                  RTS
+1681   5BC0             ; PUTS: X -> zero-terminated string
+1682   5BC0 A6 00       PUTS:   LDAA 0,X
+1683   5BC2 27 08               BEQ PS_R
+1684   5BC4 3C                  PSHX
+1685   5BC5 BD 5B 7B            JSR PUTC
+1686   5BC8 38                  PULX
+1687   5BC9 08                  INX
+1688   5BCA 20 F4               BRA PUTS
+1689   5BCC 39          PS_R:   RTS
+1690   5BCD             ; PUT6: X -> exactly six characters
+1691   5BCD C6 06       PUT6:   LDAB #6
+1692   5BCF D7 D6               STAB U3
+1693   5BD1 A6 00       P6_L:   LDAA 0,X
+1694   5BD3 3C                  PSHX
+1695   5BD4 BD 5B 7B            JSR PUTC
+1696   5BD7 38                  PULX
+1697   5BD8 08                  INX
+1698   5BD9 7A 00 D6            DEC U3
+1699   5BDC 26 F3               BNE P6_L
+1700   5BDE 39                  RTS
+1701   5BDF             ; PRTAT: A=col B=row X=string(zero-terminated)
+1702   5BDF 97 C3       PRTAT:  STAA TCOL
+1703   5BE1 D7 C4               STAB TROW
+1704   5BE3 20 DB               BRA PUTS
+1705   5BE5             
+1706   5BE5             ; BLIT a 12x11 tile: DSCR, SPRP, TMB, SQB0/SQB1 set up by caller
+1707   5BE5 86 0B       BLIT:   LDAA #11
+1708   5BE7 97 D1               STAA DROWS
+1709   5BE9 DE CF       BL_ROW: LDX SPRP
+1710   5BEB A6 00               LDAA 0,X
+1711   5BED 16                  TAB
+1712   5BEE 94 CE               ANDA TMB
+1713   5BF0 53                  COMB
+1714   5BF1 D4 CC               ANDB SQB0
+1715   5BF3 1B                  ABA
+1716   5BF4 97 D7               STAA R0
+1717   5BF6 A6 01               LDAA 1,X
+1718   5BF8 16                  TAB
+1719   5BF9 94 CE               ANDA TMB
+1720   5BFB 53                  COMB
+1721   5BFC D4 CC               ANDB SQB0
+1722   5BFE 1B                  ABA
+1723   5BFF 97 D8               STAA R1
+1724   5C01 A6 02               LDAA 2,X
+1725   5C03 16                  TAB
+1726   5C04 94 CE               ANDA TMB
+1727   5C06 53                  COMB
+1728   5C07 D4 CC               ANDB SQB0
+1729   5C09 1B                  ABA
+1730   5C0A 97 D9               STAA R2
+1731   5C0C DE CA               LDX DSCR
+1732   5C0E 96 D7               LDAA R0
+1733   5C10 A7 00               STAA 0,X
+1734   5C12 96 D8               LDAA R1
+1735   5C14 A7 01               STAA 1,X
+1736   5C16 96 D9               LDAA R2
+1737   5C18 A7 02               STAA 2,X
+1738   5C1A C6 20               LDAB #32
+1739   5C1C 3A                  ABX
+1740   5C1D DF CA               STX DSCR
+1741   5C1F DC CF               LDD SPRP
+1742   5C21 C3 00 03            ADDD #3
+1743   5C24 DD CF               STD SPRP
+1744   5C26 96 CC               LDAA SQB0
+1745   5C28 D6 CD               LDAB SQB1
+1746   5C2A D7 CC               STAB SQB0
+1747   5C2C 97 CD               STAA SQB1
+1748   5C2E 7A 00 D1            DEC DROWS
+1749   5C31 26 B6               BNE BL_ROW
+1750   5C33 39                  RTS
+1751   5C34             
+1752   5C34             ; DRAWSQ: draw square DQ (0x88) according to the position in MAIL
+1753   5C34 96 C9       DRAWSQ: LDAA DQ
+1754   5C36 84 07               ANDA #7
+1755   5C38 97 D4               STAA U1                 ; file
+1756   5C3A 96 C9               LDAA DQ
+1757   5C3C 44                  LSRA
+1758   5C3D 44                  LSRA
+1759   5C3E 44                  LSRA
+1760   5C3F 44                  LSRA
+1761   5C40 97 D5               STAA U2                 ; rank
+1762   5C42 9B D4               ADDA U1
+1763   5C44 84 01               ANDA #1
+1764   5C46 97 D6               STAA U3                 ; 1 = light square
+1765   5C48 7D 00 B9            TST FLIP
+1766   5C4B 26 08               BNE DS_FL
+1767   5C4D 86 07               LDAA #7
+1768   5C4F 90 D5               SUBA U2
+1769   5C51 97 D5               STAA U2
+1770   5C53 20 06               BRA DS_P
+1771   5C55 86 07       DS_FL:  LDAA #7
+1772   5C57 90 D4               SUBA U1
+1773   5C59 97 D4               STAA U1
+1774   5C5B 96 D4       DS_P:   LDAA U1
+1775   5C5D 48                  ASLA
+1776   5C5E 9B D4               ADDA U1
+1777   5C60 8B 02               ADDA #2
+1778   5C62 97 D4               STAA U1                 ; byte column
+1779   5C64 96 D5               LDAA U2
+1780   5C66 C6 0B               LDAB #11
+1781   5C68 3D                  MUL
+1782   5C69 05                  ASLD
+1783   5C6A 05                  ASLD
+1784   5C6B 05                  ASLD
+1785   5C6C 05                  ASLD
+1786   5C6D 05                  ASLD
+1787   5C6E C3 40 00            ADDD #$4000
+1788   5C71 DB D4               ADDB U1
+1789   5C73 DD CA               STD DSCR
+1790   5C75 86 00               LDAA #C_GRN
+1791   5C77 7D 00 D6            TST U3
+1792   5C7A 27 02               BEQ DS_C
+1793   5C7C 86 55               LDAA #C_YEL
+1794   5C7E 97 CC       DS_C:   STAA SQB0
+1795   5C80 97 CD               STAA SQB1
+1796   5C82 96 C9               LDAA DQ
+1797   5C84 91 BA               CMPA LASTF
+1798   5C86 27 08               BEQ DS_HL
+1799   5C88 91 BB               CMPA LASTT
+1800   5C8A 27 04               BEQ DS_HL
+1801   5C8C 91 C1               CMPA HLF
+1802   5C8E 26 08               BNE DS_NH
+1803   5C90 86 44       DS_HL:  LDAA #$44
+1804   5C92 97 CC               STAA SQB0
+1805   5C94 86 11               LDAA #$11
+1806   5C96 97 CD               STAA SQB1
+1807   5C98 D6 C9       DS_NH:  LDAB DQ
+1808   5C9A CE 7C C0            LDX #MAIL
+1809   5C9D 3A                  ABX
+1810   5C9E A6 00               LDAA 0,X
+1811   5CA0 26 0B               BNE DS_PC
+1812   5CA2 CE 60 0F            LDX #ZEROS
+1813   5CA5 DF CF               STX SPRP
+1814   5CA7 7F 00 CE            CLR TMB
+1815   5CAA 7E 5B E5            JMP BLIT
+1816   5CAD 84 2F       DS_PC:  ANDA #$2F
+1817   5CAF 36                  PSHA
+1818   5CB0 16                  TAB
+1819   5CB1 CE 7C 30            LDX #PTYPE
+1820   5CB4 3A                  ABX
+1821   5CB5 E6 00               LDAB 0,X
+1822   5CB7 CE 5F CE            LDX #GMAP
+1823   5CBA 3A                  ABX
+1824   5CBB A6 00               LDAA 0,X
+1825   5CBD C6 21               LDAB #33
+1826   5CBF 3D                  MUL
+1827   5CC0 C3 60 AB            ADDD #SPRITES
+1828   5CC3 DD CF               STD SPRP
+1829   5CC5 32                  PULA
+1830   5CC6 84 20               ANDA #$20
+1831   5CC8 26 04               BNE DS_BK
+1832   5CCA 86 FF               LDAA #C_RED
+1833   5CCC 20 02               BRA DS_W
+1834   5CCE 86 AA       DS_BK:  LDAA #C_BLU
+1835   5CD0 97 CE       DS_W:   STAA TMB
+1836   5CD2 7E 5B E5            JMP BLIT
+1837   5CD5             
+1838   5CD5             DRAWBOARD:
+1839   5CD5 7F 00 C9            CLR DQ
+1840   5CD8 BD 5C 34    DB_L:   JSR DRAWSQ
+1841   5CDB 7C 00 C9            INC DQ
+1842   5CDE 96 C9               LDAA DQ
+1843   5CE0 85 08               BITA #8
+1844   5CE2 27 F4               BEQ DB_L
+1845   5CE4 8B 08               ADDA #8
+1846   5CE6 97 C9               STAA DQ
+1847   5CE8 81 80               CMPA #$80
+1848   5CEA 26 EC               BNE DB_L
+1849   5CEC 39                  RTS
+1850   5CED             
+1851   5CED             ; labels around the board and static text of the side panel
+1852   5CED             DRAWSTATIC:
+1853   5CED 86 55               LDAA #C_YEL
+1854   5CEF 97 C5               STAA FGB
+1855   5CF1 7F 00 DE            CLR LBLI
+1856   5CF4 96 DE       DL_R:   LDAA LBLI               ; rank digits, one per screen row
+1857   5CF6 7D 00 B9            TST FLIP
+1858   5CF9 26 08               BNE DL_R1
+1859   5CFB 86 07               LDAA #7
+1860   5CFD 90 DE               SUBA LBLI               ; A = 7 - row
+1861   5CFF 8B 31               ADDA #$31
+1862   5D01 20 02               BRA DL_R2
+1863   5D03 8B 31       DL_R1:  ADDA #$31
+1864   5D05 36          DL_R2:  PSHA
+1865   5D06 96 DE               LDAA LBLI
+1866   5D08 C6 0B               LDAB #11
+1867   5D0A 3D                  MUL
+1868   5D0B CB 03               ADDB #3
+1869   5D0D D7 C4               STAB TROW
+1870   5D0F 7F 00 C3            CLR TCOL
+1871   5D12 32                  PULA
+1872   5D13 BD 5B 7B            JSR PUTC
+1873   5D16 7C 00 DE            INC LBLI
+1874   5D19 96 DE               LDAA LBLI
+1875   5D1B 81 08               CMPA #8
+1876   5D1D 26 D5               BNE DL_R
+1877   5D1F 7F 00 DE            CLR LBLI
+1878   5D22 96 DE       DL_F:   LDAA LBLI               ; file letters under the board
+1879   5D24 7D 00 B9            TST FLIP
+1880   5D27 26 04               BNE DL_F1
+1881   5D29 8B 41               ADDA #$41
+1882   5D2B 20 04               BRA DL_F2
+1883   5D2D 86 48       DL_F1:  LDAA #$48
+1884   5D2F 90 DE               SUBA LBLI
+1885   5D31 36          DL_F2:  PSHA
+1886   5D32 96 DE               LDAA LBLI
+1887   5D34 48                  ASLA
+1888   5D35 9B DE               ADDA LBLI
+1889   5D37 8B 03               ADDA #3
+1890   5D39 97 C3               STAA TCOL
+1891   5D3B 86 59               LDAA #89
+1892   5D3D 97 C4               STAA TROW
+1893   5D3F 32                  PULA
+1894   5D40 BD 5B 7B            JSR PUTC
+1895   5D43 7C 00 DE            INC LBLI
+1896   5D46 96 DE               LDAA LBLI
+1897   5D48 81 08               CMPA #8
+1898   5D4A 26 D6               BNE DL_F
+1899   5D4C 86 1A               LDAA #26
+1900   5D4E C6 00               LDAB #0
+1901   5D50 CE 5E BF            LDX #T_MICRO
+1902   5D53 BD 5B DF            JSR PRTAT
+1903   5D56 86 1A               LDAA #26
+1904   5D58 C6 06               LDAB #6
+1905   5D5A CE 5E C5            LDX #T_CHESS
+1906   5D5D BD 5B DF            JSR PRTAT
+1907   5D60 86 1A               LDAA #26
+1908   5D62 C6 0C               LDAB #12
+1909   5D64 CE 5E CB            LDX #T_16K
+1910   5D67 BD 5B DF            JSR PRTAT
+1911   5D6A 86 1A               LDAA #26
+1912   5D6C C6 12               LDAB #18
+1913   5D6E CE 5E CF            LDX #T_YOUW
+1914   5D71 7D 00 B8            TST HUMAN
+1915   5D74 27 03               BEQ DSP1
+1916   5D76 CE 5E D5            LDX #T_YOUB
+1917   5D79 BD 5B DF    DSP1:   JSR PRTAT
+1918   5D7C 86 1A               LDAA #26
+1919   5D7E C6 4E               LDAB #78
+1920   5D80 CE 5E DB            LDX #T_NEW
+1921   5D83 BD 5B DF            JSR PRTAT
+1922   5D86 86 1A               LDAA #26
+1923   5D88 C6 54               LDAB #84
+1924   5D8A CE 5E E1            LDX #T_QUIT
+1925   5D8D BD 5B DF            JSR PRTAT
+1926   5D90 39                  RTS
+1927   5D91             
+1928   5D91             DRAWMOVES:
+1929   5D91 86 55               LDAA #C_YEL
+1930   5D93 97 C5               STAA FGB
+1931   5D95 86 1A               LDAA #26
+1932   5D97 C6 1E               LDAB #30
+1933   5D99 CE 80 70            LDX #HTXT
+1934   5D9C BD 5B DF            JSR PRTAT
+1935   5D9F 86 1A               LDAA #26
+1936   5DA1 C6 24               LDAB #36
+1937   5DA3 CE 80 78            LDX #CTXT
+1938   5DA6 7E 5B DF            JMP PRTAT
+1939   5DA9             
+1940   5DA9             ; typed-move echo
+1941   5DA9             DRAWINPUT:
+1942   5DA9 86 55               LDAA #C_YEL
+1943   5DAB 97 C5               STAA FGB
+1944   5DAD 5F                  CLRB
+1945   5DAE D1 BC       DI_L:   CMPB INLEN
+1946   5DB0 25 0E               BCS DI_CH
+1947   5DB2 26 08               BNE DI_BL
+1948   5DB4 C1 04               CMPB #4
+1949   5DB6 24 04               BCC DI_BL
+1950   5DB8 86 5F               LDAA #$5F
+1951   5DBA 20 0A               BRA DI_ST
+1952   5DBC 86 20       DI_BL:  LDAA #$20
+1953   5DBE 20 06               BRA DI_ST
+1954   5DC0 CE 00 BD    DI_CH:  LDX #INBUF
+1955   5DC3 3A                  ABX
+1956   5DC4 A6 00               LDAA 0,X
+1957   5DC6 CE 80 80    DI_ST:  LDX #INTXT
+1958   5DC9 3A                  ABX
+1959   5DCA A7 00               STAA 0,X
+1960   5DCC 5C                  INCB
+1961   5DCD C1 06               CMPB #6
+1962   5DCF 26 DD               BNE DI_L
+1963   5DD1 6F 01               CLR 1,X
+1964   5DD3 86 1A               LDAA #26
+1965   5DD5 C6 42               LDAB #66
+1966   5DD7 CE 80 80            LDX #INTXT
+1967   5DDA 7E 5B DF            JMP PRTAT
+1968   5DDD             
+1969   5DDD             ; status message: three 6-char lines from MSGTAB
+1970   5DDD 96 DA       STATUS: LDAA MSGID
+1971   5DDF C6 12               LDAB #18
+1972   5DE1 3D                  MUL
+1973   5DE2 C3 5F 3E            ADDD #MSGTAB
+1974   5DE5 DD C7               STD TPTR
+1975   5DE7 86 FF               LDAA #C_RED
+1976   5DE9 97 C5               STAA FGB
+1977   5DEB 86 1A               LDAA #26
+1978   5DED 97 C3               STAA TCOL
+1979   5DEF 86 30               LDAA #48
+1980   5DF1 97 C4               STAA TROW
+1981   5DF3 DE C7               LDX TPTR
+1982   5DF5 BD 5B CD            JSR PUT6
+1983   5DF8 86 1A               LDAA #26
+1984   5DFA 97 C3               STAA TCOL
+1985   5DFC 86 36               LDAA #54
+1986   5DFE 97 C4               STAA TROW
+1987   5E00 BD 5B CD            JSR PUT6
+1988   5E03 86 1A               LDAA #26
+1989   5E05 97 C3               STAA TCOL
+1990   5E07 86 3C               LDAA #60
+1991   5E09 97 C4               STAA TROW
+1992   5E0B BD 5B CD            JSR PUT6
+1993   5E0E 39                  RTS
+1994   5E0F             
+1995   5E0F             ; ---------------------------------------------------------------------
+1996   5E0F             ;  title screen / colour choice
+1997   5E0F             ; ---------------------------------------------------------------------
+1998   5E0F             TITLESCR:
+1999   5E0F 7F 00 C6            CLR BGB
+2000   5E12 BD 5B 6D            JSR CLS
+2001   5E15 7F 00 DE            CLR LBLI
+2002   5E18 86 05       TS_B:   LDAA #5
+2003   5E1A 90 DE               SUBA LBLI
+2004   5E1C C6 21               LDAB #33
+2005   5E1E 3D                  MUL
+2006   5E1F C3 60 AB            ADDD #SPRITES
+2007   5E22 DD CF               STD SPRP
+2008   5E24 96 DE               LDAA LBLI
+2009   5E26 84 01               ANDA #1
+2010   5E28 26 08               BNE TS_ODD
+2011   5E2A 86 FF               LDAA #C_RED
+2012   5E2C 97 CE               STAA TMB
+2013   5E2E 86 55               LDAA #C_YEL
+2014   5E30 20 06               BRA TS_P
+2015   5E32 86 AA       TS_ODD: LDAA #C_BLU
+2016   5E34 97 CE               STAA TMB
+2017   5E36 86 00               LDAA #C_GRN
+2018   5E38 97 CC       TS_P:   STAA SQB0
+2019   5E3A 97 CD               STAA SQB1
+2020   5E3C 96 DE               LDAA LBLI
+2021   5E3E 48                  ASLA
+2022   5E3F 9B DE               ADDA LBLI
+2023   5E41 8B 07               ADDA #7
+2024   5E43 97 D4               STAA U1
+2025   5E45 CC 41 00            LDD #$4100
+2026   5E48 DB D4               ADDB U1
+2027   5E4A DD CA               STD DSCR
+2028   5E4C BD 5B E5            JSR BLIT
+2029   5E4F 7C 00 DE            INC LBLI
+2030   5E52 96 DE               LDAA LBLI
+2031   5E54 81 06               CMPA #6
+2032   5E56 26 C0               BNE TS_B
+2033   5E58 86 FF               LDAA #C_RED
+2034   5E5A 97 C5               STAA FGB
+2035   5E5C 86 0B               LDAA #11
+2036   5E5E C6 1A               LDAB #26
+2037   5E60 CE 5E E8            LDX #T_TITLE
+2038   5E63 BD 5B DF            JSR PRTAT
+2039   5E66 86 55               LDAA #C_YEL
+2040   5E68 97 C5               STAA FGB
+2041   5E6A 86 08               LDAA #8
+2042   5E6C C6 22               LDAB #34
+2043   5E6E CE 5E F3            LDX #T_SUB1
+2044   5E71 BD 5B DF            JSR PRTAT
+2045   5E74 86 04               LDAA #4
+2046   5E76 C6 2A               LDAB #42
+2047   5E78 CE 5F 03            LDX #T_SUB2
+2048   5E7B BD 5B DF            JSR PRTAT
+2049   5E7E 86 0C               LDAA #12
+2050   5E80 C6 3C               LDAB #60
+2051   5E82 CE 5F 1B            LDX #T_PLAY
+2052   5E85 BD 5B DF            JSR PRTAT
+2053   5E88 86 FF               LDAA #C_RED
+2054   5E8A 97 C5               STAA FGB
+2055   5E8C 86 08               LDAA #8
+2056   5E8E C6 44               LDAB #68
+2057   5E90 CE 5F 24            LDX #T_CHOOSE
+2058   5E93 BD 5B DF            JSR PRTAT
+2059   5E96 86 55               LDAA #C_YEL
+2060   5E98 97 C5               STAA FGB
+2061   5E9A 86 0C               LDAA #12
+2062   5E9C C6 54               LDAB #84
+2063   5E9E CE 5F 35            LDX #T_QUIT2
+2064   5EA1 BD 5B DF            JSR PRTAT
+2065   5EA4 BD 5B 3F    TS_K:   JSR GETKEY
+2066   5EA7 81 57               CMPA #$57               ; W
+2067   5EA9 27 0B               BEQ TS_W
+2068   5EAB 81 42               CMPA #$42               ; B
+2069   5EAD 27 0B               BEQ TS_BL
+2070   5EAF 81 51               CMPA #$51               ; Q
+2071   5EB1 26 F1               BNE TS_K
+2072   5EB3 7E 5A 6C            JMP QUIT
+2073   5EB6 7F 00 B8    TS_W:   CLR HUMAN
+2074   5EB9 39                  RTS
+2075   5EBA 86 20       TS_BL:  LDAA #$20
+2076   5EBC 97 B8               STAA HUMAN
+2077   5EBE 39                  RTS
+2078   5EBF             
+2079   5EBF             ; ---------------------------------------------------------------------
+2080   5EBF             ;  data
+2081   5EBF             ; ---------------------------------------------------------------------
+2082   5EBF 4D4943524F00T_MICRO: .strz "MICRO"
+2083   5EC5 434845535300T_CHESS: .strz "CHESS"
+2084   5ECB 31 36 4B 00 T_16K:  .strz "16K"
+2085   5ECF 594F553D5700T_YOUW: .strz "YOU=W"
+2086   5ED5 594F553D4200T_YOUB: .strz "YOU=B"
+2087   5EDB 4E3D4E455700T_NEW:  .strz "N=NEW"
+2088   5EE1 513D5155495400T_QUIT: .strz "Q=QUIT"
+2089   5EE8 4D4943524F434845T_TITLE: .strz "MICROCHESS"
+2089   5EF0 535300      
+2090   5EF3 54414E4459204D43T_SUB1: .strz "TANDY MC-10 16K"
+2090   5EFB 2D31302031364B00
+2091   5F03 4241534544204F4ET_SUB2: .strz "BASED ON PETER JENNINGS"
+2091   5F0B 205045544552204A
+2091   5F13 454E4E494E475300
+2092   5F1B 504C41592041533AT_PLAY: .strz "PLAY AS:"
+2092   5F23 00          
+2093   5F24 573D574849544520T_CHOOSE: .strz "W=WHITE  B=BLACK"
+2093   5F2C 20423D424C41434B
+2093   5F34 00          
+2094   5F35 51203D2051554954T_QUIT2: .strz "Q = QUIT"
+2094   5F3D 00          
+2095   5F3E 594F555220204D4FMSGTAB: .text "YOUR  MOVE        "
+2095   5F46 5645202020202020
+2095   5F4E 2020        
+2096   5F50 5448494E4B20494E        .text "THINK ING...      "
+2096   5F58 472E2E2E20202020
+2096   5F60 2020        
+2097   5F62 434845434B21594F        .text "CHECK!YOUR  MOVE  "
+2097   5F6A 555220204D4F5645
+2097   5F72 2020        
+2098   5F74 4241442020204D4F        .text "BAD   MOVE!       "
+2098   5F7C 5645212020202020
+2098   5F84 2020        
+2099   5F86 4D4154452120594F        .text "MATE! YOU   WIN!  "
+2099   5F8E 5520202057494E21
+2099   5F96 2020        
+2100   5F98 4D41544521204350        .text "MATE! CPU   WINS  "
+2100   5FA0 5520202057494E53
+2100   5FA8 2020        
+2101   5FAA 5354414C452D4D41        .text "STALE-MATE! DRAW  "
+2101   5FB2 5445212044524157
+2101   5FBA 2020        
+2102   5FBC 434845434B215448        .text "CHECK!THINK       "
+2102   5FC4 494E4B2020202020
+2102   5FCC 2020        
+2103   5FCE 0003020401000000GMAP:   .BYTE 0,3,2,4,1,0,0,0,5,0,0,0,0,0,0,0,0
+2103   5FD6 0500000000000000
+2103   5FDE 00          
+2104   5FDF 0041424344454647KEYTAB: .BYTE $00,$41,$42,$43,$44,$45,$46,$47
+2105   5FE7 48494A4B4C4D4E4F        .BYTE $48,$49,$4A,$4B,$4C,$4D,$4E,$4F
+2106   5FEF 5051525354555657        .BYTE $50,$51,$52,$53,$54,$55,$56,$57
+2107   5FF7 58595A0000000D20        .BYTE $58,$59,$5A,$00,$00,$00,$0D,$20
+2108   5FFF 3031323334353637        .BYTE $30,$31,$32,$33,$34,$35,$36,$37
+2109   6007 38393A3B2C2D2E2F        .BYTE $38,$39,$3A,$3B,$2C,$2D,$2E,$2F
+2110   600F 0000000000000000ZEROS:  .fill 33
+2110   6017 0000000000000000
+2110   601F 0000000000000000
+2110   6027 0000000000000000
+2110   602F 00          
+2111   6030 4D4943524F434845        .strz "MICROCHESS (C) 1996-2002 PETER JENNINGS PETERJ@BENLO.COM"
+2111   6038 5353202843292031
+2111   6040 3939362D32303032
+2111   6048 205045544552204A
+2111   6050 454E4E494E475320
+2111   6058 50455445524A4042
+2111   6060 454E4C4F2E434F4D
+2111   6068 00          
+2112   6069 4D432D3130203136        .strz "MC-10 16K NATIVE 6803 PORT: CASTLING, EN PASSANT, 128X96 GRAPHICS"
+2112   6071 4B204E4154495645
+2112   6079 203638303320504F
+2112   6081 52543A2043415354
+2112   6089 4C494E472C20454E
+2112   6091 2050415353414E54
+2112   6099 2C20313238583936
+2112   60A1 2047524150484943
+2112   60A9 5300        
+2113   60AB             SPRITES:
+2114   60AB 000000000000003C        .BYTE $00,$00,$00,$00,$00,$00,$00,$3C,$00,$00,$FF,$00,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0
+2114   60B3 0000FF0000FF0000
+2114   60BB 3C0000FF0003FFC0
+2114   60C3 00FF0003FFC00FFF
+2114   60CB F0          
+2115   60CC 003C0000FF0003FF        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$C0,$3C,$FF,$C0,$30,$3F,$F0,$00,$3F,$F0,$00,$FF,$F0,$00,$FF,$F0,$03,$FF,$F0,$0F,$FF,$FC
+2115   60D4 C00FFFC03CFFC030
+2115   60DC 3FF0003FF000FFF0
+2115   60E4 00FFF003FFF00FFF
+2115   60EC FC          
+2116   60ED 003C0000FF0003FF        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$03,$F3,$C0,$03,$CF,$C0,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
+2116   60F5 C003F3C003CFC000
+2116   60FD FF00003C0000FF00
+2116   6105 03FFC00FFFF03FFF
+2116   610D FC          
+2117   610E 3CFF3C3FFFFC0FFF        .BYTE $3C,$FF,$3C,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
+2117   6116 F003FFC003FFC003
+2117   611E FFC003FFC003FFC0
+2117   6126 0FFFF03FFFFC3FFF
+2117   612E FC          
+2118   612F C33CC3F3FFFC3FFF        .BYTE $C3,$3C,$C3,$F3,$FF,$FC,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
+2118   6137 FC0FFFF003FFC003
+2118   613F FFC000FF0003FFC0
+2118   6147 0FFFF03FFFFC3FFF
+2118   614F FC          
+2119   6150 003C00033CC00FF3        .BYTE $00,$3C,$00,$03,$3C,$C0,$0F,$F3,$F0,$03,$3C,$C0,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
+2119   6158 F0033CC00FFFF003
+2119   6160 FFC003FFC000FF00
+2119   6168 03FFC00FFFF03FFF
+2119   6170 FC          
+2120   6171             FONT:
+2121   6171 0000000000303030        .BYTE $00,$00,$00,$00,$00,$30,$30,$30,$00,$30,$00,$00,$00,$00,$00
+2121   6179 00300000000000
+2122   6180 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+2122   6188 00000000000000
+2123   618F 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$30,$C0,$C0,$C0,$30
+2123   6197 000030C0C0C030
+2124   619E 300C0C0C30CC30FC        .BYTE $30,$0C,$0C,$0C,$30,$CC,$30,$FC,$30,$CC,$00,$30,$FC,$30,$00
+2124   61A6 30CC0030FC3000
+2125   61AD 00000000000000FC        .BYTE $00,$00,$00,$00,$00,$00,$00,$FC,$00,$00,$00,$00,$00,$00,$30
+2125   61B5 00000000000030
+2126   61BC 0C0C30C0C0FCCCCC        .BYTE $0C,$0C,$30,$C0,$C0,$FC,$CC,$CC,$CC,$FC,$30,$F0,$30,$30,$FC
+2126   61C4 CCFC30F03030FC
+2127   61CB F00C30C0FCF00C30        .BYTE $F0,$0C,$30,$C0,$FC,$F0,$0C,$30,$0C,$F0,$CC,$CC,$FC,$0C,$0C
+2127   61D3 0CF0CCCCFC0C0C
+2128   61DA FCC0F00CF03CC0F0        .BYTE $FC,$C0,$F0,$0C,$F0,$3C,$C0,$F0,$CC,$30,$FC,$0C,$30,$30,$30
+2128   61E2 CC30FC0C303030
+2129   61E9 FCCCFCCCFCFCCCFC        .BYTE $FC,$CC,$FC,$CC,$FC,$FC,$CC,$FC,$0C,$F0,$00,$30,$00,$30,$00
+2129   61F1 0CF00030003000
+2130   61F8 00000000000C30C0        .BYTE $00,$00,$00,$00,$00,$0C,$30,$C0,$30,$0C,$00,$FC,$00,$FC,$00
+2130   6200 300C00FC00FC00
+2131   6207 C0300C30C0F00C30        .BYTE $C0,$30,$0C,$30,$C0,$F0,$0C,$30,$00,$30,$00,$00,$00,$00,$00
+2131   620F 00300000000000
+2132   6216 30CCFCCCCCF0CCF0        .BYTE $30,$CC,$FC,$CC,$CC,$F0,$CC,$F0,$CC,$F0,$3C,$C0,$C0,$C0,$3C
+2132   621E CCF03CC0C0C03C
+2133   6225 F0CCCCCCF0FCC0F0        .BYTE $F0,$CC,$CC,$CC,$F0,$FC,$C0,$F0,$C0,$FC,$FC,$C0,$F0,$C0,$C0
+2133   622D C0FCFCC0F0C0C0
+2134   6234 3CC0CCCC3CCCCCFC        .BYTE $3C,$C0,$CC,$CC,$3C,$CC,$CC,$FC,$CC,$CC,$FC,$30,$30,$30,$FC
+2134   623C CCCCFC303030FC
+2135   6243 0C0C0CCC30CCCCF0        .BYTE $0C,$0C,$0C,$CC,$30,$CC,$CC,$F0,$CC,$CC,$C0,$C0,$C0,$C0,$FC
+2135   624B CCCCC0C0C0C0FC
+2136   6252 CCFCFCCCCCF0CCCC        .BYTE $CC,$FC,$FC,$CC,$CC,$F0,$CC,$CC,$CC,$CC,$30,$CC,$CC,$CC,$30
+2136   625A CCCC30CCCCCC30
+2137   6261 F0CCF0C0C030CCCC        .BYTE $F0,$CC,$F0,$C0,$C0,$30,$CC,$CC,$FC,$3C,$F0,$CC,$F0,$CC,$CC
+2137   6269 FC3CF0CCF0CCCC
+2138   6270 3CC0300CF0FC3030        .BYTE $3C,$C0,$30,$0C,$F0,$FC,$30,$30,$30,$30,$CC,$CC,$CC,$CC,$FC
+2138   6278 3030CCCCCCCCFC
+2139   627F CCCCCCCC30CCCCFC        .BYTE $CC,$CC,$CC,$CC,$30,$CC,$CC,$FC,$FC,$CC,$CC,$CC,$30,$CC,$CC
+2139   6287 FCCCCCCC30CCCC
+2140   628E CCCC303030FC0C30        .BYTE $CC,$CC,$30,$30,$30,$FC,$0C,$30,$C0,$FC,$00,$00,$00,$00,$00
+2140   6296 C0FC0000000000
+2141   629D 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+2141   62A5 00000000000000
+2142   62AC 00000000FC          .BYTE $00,$00,$00,$00,$FC
+2143   62B1                     .END $5000
