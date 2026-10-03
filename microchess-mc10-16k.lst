@@ -1244,992 +1244,1434 @@
 1242   5884             GKC     .EQU $E0
 1243   5884             LASTK   .EQU $E1
 1244   5884             
-1245   5884             HTXT    .EQU RAM+$470   ; "U:E2E4",0
-1246   5884             CTXT    .EQU RAM+$478   ; "C:E7E5",0
-1247   5884             INTXT   .EQU RAM+$480   ; typed move echo
-1248   5884             
-1249   5884             GFXMODE .EQU $24        ; CG3 128x96x4, CSS0 palette (green/yellow/blue/red)
-1250   5884             TXTMODE .EQU $00        ; (verified against ROM at test time)
-1251   5884             C_YEL   .EQU $55
-1252   5884             C_RED   .EQU $FF
-1253   5884             C_BLU   .EQU $AA
-1254   5884             C_GRN   .EQU $00
-1255   5884             
-1256   5884             ; ---------------------------------------------------------------------
-1257   5884             ;  program entry
-1258   5884             ; ---------------------------------------------------------------------
-1259   5884 0F          START:  SEI
-1260   5885 7F 00 E1            CLR LASTK
-1261   5888 8E 8F FF            LDS #$8FFF
-1262   588B 86 FF               LDAA #$FF
-1263   588D 97 00               STAA $00                ; port 1 = keyboard strobe outputs
-1264   588F 86 24               LDAA #GFXMODE
-1265   5891 B7 BF FF            STAA $BFFF
-1266   5894 BD 5E 0F    TITLE:  JSR TITLESCR
-1267   5897 BD 50 49    NEWGAME: JSR NEWPOS
-1268   589A 86 FF               LDAA #$FF
-1269   589C 97 BA               STAA LASTF
-1270   589E 97 BB               STAA LASTT
-1271   58A0 97 C1               STAA HLF
-1272   58A2 7F 00 BC            CLR INLEN
-1273   58A5 7F 00 C2            CLR GSTATE
-1274   58A8 96 B8               LDAA HUMAN
-1275   58AA 27 02               BEQ NG_F
-1276   58AC 86 01               LDAA #1
-1277   58AE 97 B9       NG_F:   STAA FLIP
-1278   58B0 7F 00 C6            CLR BGB
-1279   58B3 BD 5B 6D            JSR CLS
-1280   58B6 CE 80 70            LDX #HTXT
-1281   58B9 BD 5A C4            JSR INITTXT
-1282   58BC CE 80 78            LDX #CTXT
-1283   58BF BD 5A C4            JSR INITTXT
-1284   58C2 86 43               LDAA #$43
-1285   58C4 B7 80 78            STAA CTXT
-1286   58C7 BD 5C ED            JSR DRAWSTATIC
-1287   58CA BD 5C D5            JSR DRAWBOARD
-1288   58CD BD 5D 91            JSR DRAWMOVES
-1289   58D0 BD 57 E7    GLOOP:  JSR LISTMOVES
-1290   58D3 97 D3               STAA MCNT
-1291   58D5 26 2D               BNE GL_HAVE
-1292   58D7 BD 54 68            JSR INCHECK             ; no legal moves: mate or stalemate
-1293   58DA 4D                  TSTA
-1294   58DB 27 0E               BEQ GL_STALE
-1295   58DD 96 84               LDAA MYC
-1296   58DF 91 B8               CMPA HUMAN
-1297   58E1 27 04               BEQ GL_LOSE
-1298   58E3 86 04               LDAA #4                 ; you win
-1299   58E5 20 06               BRA GL_END
-1300   58E7 86 05       GL_LOSE: LDAA #5
-1301   58E9 20 02               BRA GL_END
-1302   58EB 86 06       GL_STALE: LDAA #6
-1303   58ED 97 DA       GL_END: STAA MSGID
-1304   58EF BD 5D DD            JSR STATUS
-1305   58F2 86 01               LDAA #1
-1306   58F4 97 C2               STAA GSTATE
-1307   58F6 BD 5B 3F    GL_WAIT: JSR GETKEY
-1308   58F9 81 4E               CMPA #$4E               ; N
-1309   58FB 27 97               BEQ TITLE
-1310   58FD 81 51               CMPA #$51               ; Q
-1311   58FF 26 F5               BNE GL_WAIT
-1312   5901 7E 5A 6C            JMP QUIT
-1313   5904 BD 54 68    GL_HAVE: JSR INCHECK
-1314   5907 97 DF               STAA CHKF
-1315   5909 96 84               LDAA MYC
-1316   590B 91 B8               CMPA HUMAN
-1317   590D 27 45               BEQ HUMANTURN
-1318   590F             ; ------------------------------------------------------------------ CPU
-1319   590F 86 01       CPUTURN: LDAA #1
-1320   5911 7D 00 DF            TST CHKF
-1321   5914 27 02               BEQ CT_M
-1322   5916 86 07               LDAA #7
-1323   5918 97 DA       CT_M:   STAA MSGID
-1324   591A BD 5D DD            JSR STATUS
-1325   591D BD 57 C9            JSR GO
-1326   5920 7D 00 B2            TST SEARCHOK
-1327   5923 27 12               BEQ CT_FB
-1328   5925 D6 84               LDAB MYC                ; best piece's from-square
-1329   5927 DA A1               ORAB BESTP
-1330   5929 CE 7C 00            LDX #SQ
-1331   592C 3A                  ABX
-1332   592D A6 00               LDAA 0,X
-1333   592F 97 DB               STAA FROMF
-1334   5931 96 A2               LDAA BESTM
-1335   5933 97 DC               STAA TOF
-1336   5935 20 0B               BRA CT_GO
-1337   5937 CE 7E 60    CT_FB:  LDX #MLIST              ; evaluator would resign: play first legal move
-1338   593A A6 00               LDAA 0,X
-1339   593C 97 DB               STAA FROMF
-1340   593E A6 01               LDAA 1,X
-1341   5940 97 DC               STAA TOF
-1342   5942 BD 5A 76    CT_GO:  JSR DOMOVE
-1343   5945 CE 80 7A            LDX #CTXT+2
-1344   5948 BD 5A A5            JSR SETTXT
-1345   594B BD 5C D5            JSR DRAWBOARD
-1346   594E BD 5D 91            JSR DRAWMOVES
-1347   5951 7E 58 D0            JMP GLOOP
-1348   5954             ; ------------------------------------------------------------------ human
-1349   5954 86 00       HUMANTURN: LDAA #0
-1350   5956 7D 00 DF            TST CHKF
-1351   5959 27 02               BEQ HT_M
-1352   595B 86 02               LDAA #2
-1353   595D 97 DA       HT_M:   STAA MSGID
-1354   595F BD 5D DD            JSR STATUS
-1355   5962 7F 00 BC            CLR INLEN
-1356   5965 86 FF               LDAA #$FF
-1357   5967 97 C1               STAA HLF
-1358   5969 BD 5D A9            JSR DRAWINPUT
-1359   596C BD 5B 3F    HT_KEY: JSR GETKEY
-1360   596F 81 4E               CMPA #$4E
-1361   5971 27 57               BEQ HT_NEW
-1362   5973 81 51               CMPA #$51
-1363   5975 26 03               BNE HT_K2
-1364   5977 7E 5A 6C            JMP QUIT
-1365   597A 81 1B       HT_K2:  CMPA #27
-1366   597C 27 4F               BEQ HT_CLR
-1367   597E 81 08               CMPA #8
-1368   5980 27 56               BEQ HT_BS
-1369   5982 81 30               CMPA #$30
-1370   5984 27 52               BEQ HT_BS
-1371   5986 81 0D               CMPA #13
-1372   5988 27 60               BEQ HT_ENT
-1373   598A D6 BC               LDAB INLEN
-1374   598C C1 04               CMPB #4
-1375   598E 24 DC               BCC HT_KEY
-1376   5990 97 D4               STAA U1                 ; candidate character
-1377   5992 C5 01               BITB #1
-1378   5994 26 0A               BNE HT_RANK
-1379   5996 81 41               CMPA #$41               ; file A-H
-1380   5998 25 D2               BCS HT_KEY
-1381   599A 81 49               CMPA #$49
-1382   599C 24 CE               BCC HT_KEY
-1383   599E 20 08               BRA HT_ADD
-1384   59A0 81 31       HT_RANK: CMPA #$31              ; rank 1-8
-1385   59A2 25 C8               BCS HT_KEY
-1386   59A4 81 39               CMPA #$39
-1387   59A6 24 C4               BCC HT_KEY
-1388   59A8 CE 00 BD    HT_ADD: LDX #INBUF
-1389   59AB 3A                  ABX
-1390   59AC 96 D4               LDAA U1
-1391   59AE A7 00               STAA 0,X
-1392   59B0 7C 00 BC            INC INLEN
-1393   59B3 96 BC               LDAA INLEN
-1394   59B5 81 02               CMPA #2
-1395   59B7 26 0C               BNE HT_REDR
-1396   59B9 BD 5A 59            JSR PARSEFROM           ; highlight the from-square
-1397   59BC 96 DB               LDAA FROMF
-1398   59BE 97 C1               STAA HLF
-1399   59C0 97 C9               STAA DQ
-1400   59C2 BD 5C 34            JSR DRAWSQ
-1401   59C5 BD 5D A9    HT_REDR: JSR DRAWINPUT
-1402   59C8 20 A2               BRA HT_KEY
-1403   59CA 7E 58 94    HT_NEW: JMP TITLE
-1404   59CD BD 5A 49    HT_CLR: JSR UNHL
-1405   59D0 7F 00 BC            CLR INLEN
-1406   59D3 BD 5D A9            JSR DRAWINPUT
-1407   59D6 20 94               BRA HT_KEY
-1408   59D8 96 BC       HT_BS:  LDAA INLEN
-1409   59DA 27 90               BEQ HT_KEY
-1410   59DC 7A 00 BC            DEC INLEN
-1411   59DF 96 BC               LDAA INLEN
-1412   59E1 81 01               CMPA #1
-1413   59E3 26 E0               BNE HT_REDR
-1414   59E5 BD 5A 49            JSR UNHL
-1415   59E8 20 DB               BRA HT_REDR
-1416   59EA 96 BC       HT_ENT: LDAA INLEN
-1417   59EC 81 04               CMPA #4
-1418   59EE 27 03               BEQ HT_E2
-1419   59F0 7E 59 6C            JMP HT_KEY
-1420   59F3             HT_E2:
-1421   59F3 BD 5A 49            JSR UNHL
-1422   59F6 BD 5A 59            JSR PARSEFROM
-1423   59F9 96 BF               LDAA INBUF+2
-1424   59FB 80 41               SUBA #$41
-1425   59FD 97 D4               STAA U1
-1426   59FF 96 C0               LDAA INBUF+3
-1427   5A01 80 31               SUBA #$31
-1428   5A03 48                  ASLA
-1429   5A04 48                  ASLA
-1430   5A05 48                  ASLA
-1431   5A06 48                  ASLA
-1432   5A07 9A D4               ORAA U1
-1433   5A09 97 DC               STAA TOF
-1434   5A0B CE 7E 60            LDX #MLIST              ; is it in the legal list?
-1435   5A0E D6 D3               LDAB MCNT
-1436   5A10 A6 00       HT_FND: LDAA 0,X
-1437   5A12 91 DB               CMPA FROMF
-1438   5A14 26 06               BNE HT_NX
-1439   5A16 A6 01               LDAA 1,X
-1440   5A18 91 DC               CMPA TOF
-1441   5A1A 27 15               BEQ HT_OK
-1442   5A1C 08          HT_NX:  INX
-1443   5A1D 08                  INX
-1444   5A1E 5A                  DECB
-1445   5A1F 26 EF               BNE HT_FND
-1446   5A21 86 03               LDAA #3                 ; not legal
-1447   5A23 97 DA               STAA MSGID
-1448   5A25 BD 5D DD            JSR STATUS
-1449   5A28 7F 00 BC            CLR INLEN
-1450   5A2B BD 5D A9            JSR DRAWINPUT
-1451   5A2E 7E 59 6C            JMP HT_KEY
-1452   5A31 BD 5A 76    HT_OK:  JSR DOMOVE
-1453   5A34 CE 80 72            LDX #HTXT+2
-1454   5A37 BD 5A A5            JSR SETTXT
-1455   5A3A 7F 00 BC            CLR INLEN
-1456   5A3D BD 5D A9            JSR DRAWINPUT
-1457   5A40 BD 5C D5            JSR DRAWBOARD
-1458   5A43 BD 5D 91            JSR DRAWMOVES
-1459   5A46 7E 58 D0            JMP GLOOP
-1460   5A49 96 C1       UNHL:   LDAA HLF
-1461   5A4B 81 FF               CMPA #$FF
-1462   5A4D 27 09               BEQ UH_R
-1463   5A4F 97 C9               STAA DQ
-1464   5A51 86 FF               LDAA #$FF
-1465   5A53 97 C1               STAA HLF
-1466   5A55 BD 5C 34            JSR DRAWSQ
-1467   5A58 39          UH_R:   RTS
-1468   5A59             PARSEFROM:
-1469   5A59 96 BD               LDAA INBUF
-1470   5A5B 80 41               SUBA #$41
-1471   5A5D 97 D4               STAA U1
-1472   5A5F 96 BE               LDAA INBUF+1
-1473   5A61 80 31               SUBA #$31
-1474   5A63 48                  ASLA
-1475   5A64 48                  ASLA
-1476   5A65 48                  ASLA
-1477   5A66 48                  ASLA
-1478   5A67 9A D4               ORAA U1
-1479   5A69 97 DB               STAA FROMF
-1480   5A6B 39                  RTS
-1481   5A6C 86 00       QUIT:   LDAA #TXTMODE
-1482   5A6E B7 BF FF            STAA $BFFF
-1483   5A71 FE FF FE            LDX $FFFE               ; cold start BASIC
-1484   5A74 6E 00               JMP 0,X
-1485   5A76             
-1486   5A76             ; ---------------------------------------------------------------------
-1487   5A76             ;  DOMOVE: play FROMF -> TOF for the side to move, switch sides.
-1488   5A76             ; ---------------------------------------------------------------------
-1489   5A76 D6 84       DOMOVE: LDAB MYC
-1490   5A78 CE 7C 00            LDX #SQ
-1491   5A7B 3A                  ABX
-1492   5A7C 5F                  CLRB                    ; find piece index standing on FROMF
-1493   5A7D A6 00       DM_F:   LDAA 0,X
-1494   5A7F 91 DB               CMPA FROMF
-1495   5A81 27 06               BEQ DM_G
-1496   5A83 08                  INX
-1497   5A84 5C                  INCB
-1498   5A85 C1 10               CMPB #16
-1499   5A87 26 F4               BNE DM_F
-1500   5A89 D7 80       DM_G:   STAB PIECE
-1501   5A8B 96 DC               LDAA TOF
-1502   5A8D 97 81               STAA SQUARE
-1503   5A8F 7F 00 82            CLR MOVEN
-1504   5A92 BD 51 46            JSR MOVE
-1505   5A95 CE 7D 60            LDX #USTACK
-1506   5A98 DF 8E               STX UPTR
-1507   5A9A 96 DB               LDAA FROMF
-1508   5A9C 97 BA               STAA LASTF
-1509   5A9E 96 DC               LDAA TOF
-1510   5AA0 97 BB               STAA LASTT
-1511   5AA2 7E 50 31            JMP REVERSE
-1512   5AA5             ; X -> 4 chars, text of FROMF/TOF
-1513   5AA5 96 DB       SETTXT: LDAA FROMF
-1514   5AA7 BD 5A B8            JSR SQCH
-1515   5AAA A7 00               STAA 0,X
-1516   5AAC E7 01               STAB 1,X
-1517   5AAE 96 DC               LDAA TOF
-1518   5AB0 BD 5A B8            JSR SQCH
-1519   5AB3 A7 02               STAA 2,X
-1520   5AB5 E7 03               STAB 3,X
-1521   5AB7 39                  RTS
-1522   5AB8 16          SQCH:   TAB                     ; A = square -> A file char, B rank char
-1523   5AB9 84 07               ANDA #7
-1524   5ABB 8B 41               ADDA #$41
-1525   5ABD 54                  LSRB
-1526   5ABE 54                  LSRB
-1527   5ABF 54                  LSRB
-1528   5AC0 54                  LSRB
-1529   5AC1 CB 31               ADDB #$31
-1530   5AC3 39                  RTS
-1531   5AC4 86 55       INITTXT: LDAA #$55              ; "U:----"
-1532   5AC6 A7 00               STAA 0,X
-1533   5AC8 86 3A               LDAA #$3A
-1534   5ACA A7 01               STAA 1,X
-1535   5ACC 86 2D               LDAA #$2D
-1536   5ACE A7 02               STAA 2,X
-1537   5AD0 A7 03               STAA 3,X
-1538   5AD2 A7 04               STAA 4,X
-1539   5AD4 A7 05               STAA 5,X
-1540   5AD6 6F 06               CLR 6,X
-1541   5AD8 39                  RTS
-1542   5AD9             
-1543   5AD9             ; ---------------------------------------------------------------------
-1544   5AD9             ;  keyboard
-1545   5AD9             ; ---------------------------------------------------------------------
-1546   5AD9             ;  SCAN: A = ASCII of a pressed key (letters, digits, ENTER=13, BREAK=27,
-1547   5AD9             ;        CTRL-A = 8) or 0.  Matrix: strobe a column low on port 1, read the
-1548   5AD9             ;        six row bits at $BFFF (active low).  CTRL/BREAK read via port 2.
-1549   5AD9 86 FE       SCAN:   LDAA #$FE               ; column 0 strobe: CTRL state
-1550   5ADB 97 02               STAA $02
-1551   5ADD 01                  NOP
-1552   5ADE 01                  NOP
-1553   5ADF D6 03               LDAB $03
-1554   5AE1 C4 02               ANDB #2
-1555   5AE3 D7 DD               STAB CTRLF              ; 0 = CTRL held
-1556   5AE5 86 FB               LDAA #$FB               ; column 2 strobe: BREAK state
-1557   5AE7 97 02               STAA $02
-1558   5AE9 01                  NOP
-1559   5AEA 01                  NOP
-1560   5AEB D6 03               LDAB $03
-1561   5AED C5 02               BITB #2
-1562   5AEF 26 03               BNE SC_NB
-1563   5AF1 86 1B               LDAA #27
-1564   5AF3 39                  RTS
-1565   5AF4 86 FE       SC_NB:  LDAA #$FE
-1566   5AF6 97 D5               STAA U2
-1567   5AF8 7F 00 D6            CLR U3
-1568   5AFB 96 D5       SC_COL: LDAA U2
-1569   5AFD 97 02               STAA $02
-1570   5AFF 01                  NOP
-1571   5B00 01                  NOP
-1572   5B01 B6 BF FF            LDAA $BFFF
-1573   5B04 43                  COMA
-1574   5B05 84 3F               ANDA #$3F
-1575   5B07 26 11               BNE SC_HIT
-1576   5B09 96 D5       SC_NX:  LDAA U2
-1577   5B0B 0D                  SEC
-1578   5B0C 49                  ROLA
-1579   5B0D 97 D5               STAA U2
-1580   5B0F 7C 00 D6            INC U3
-1581   5B12 D6 D6               LDAB U3
-1582   5B14 C1 08               CMPB #8
-1583   5B16 26 E3               BNE SC_COL
-1584   5B18 4F                  CLRA
-1585   5B19 39                  RTS
-1586   5B1A 5F          SC_HIT: CLRB                    ; B = row of lowest set bit
-1587   5B1B 44          SC_R:   LSRA
-1588   5B1C 25 03               BCS SC_F
-1589   5B1E 5C                  INCB
-1590   5B1F 20 FA               BRA SC_R
-1591   5B21 D7 D4       SC_F:   STAB U1                 ; row
-1592   5B23 96 D4               LDAA U1
-1593   5B25 48                  ASLA
-1594   5B26 48                  ASLA
-1595   5B27 48                  ASLA
-1596   5B28 9B D6               ADDA U3                 ; row*8+col
-1597   5B2A CE 5F DF            LDX #KEYTAB
-1598   5B2D 16                  TAB
-1599   5B2E 3A                  ABX
-1600   5B2F A6 00               LDAA 0,X
-1601   5B31 27 D6               BEQ SC_NX
-1602   5B33 7D 00 DD            TST CTRLF
-1603   5B36 26 06               BNE SC_R2
-1604   5B38 81 41               CMPA #$41               ; CTRL-A = backspace
-1605   5B3A 26 02               BNE SC_R2
-1606   5B3C 86 08               LDAA #8
-1607   5B3E 39          SC_R2:  RTS
-1608   5B3F 7F 00 E0    GETKEY: CLR GKC
-1609   5B42 BD 5A D9    GK_L:   JSR SCAN
-1610   5B45 4D                  TSTA
-1611   5B46 26 12               BNE GK_D
-1612   5B48 D6 E0               LDAB GKC                ; key up: after 8 empty scans forget last key
-1613   5B4A C1 08               CMPB #8
-1614   5B4C 24 F4               BCC GK_L
-1615   5B4E 5C                  INCB
-1616   5B4F D7 E0               STAB GKC
-1617   5B51 C1 08               CMPB #8
-1618   5B53 26 ED               BNE GK_L
-1619   5B55 7F 00 E1            CLR LASTK
-1620   5B58 20 E8               BRA GK_L
-1621   5B5A 7F 00 E0    GK_D:   CLR GKC
-1622   5B5D 91 E1               CMPA LASTK              ; still holding the previous key?
-1623   5B5F 27 E1               BEQ GK_L
-1624   5B61 97 D2               STAA KEYC
-1625   5B63 BD 5A D9            JSR SCAN                ; confirm
-1626   5B66 91 D2               CMPA KEYC
-1627   5B68 26 D8               BNE GK_L
-1628   5B6A 97 E1               STAA LASTK
-1629   5B6C 39                  RTS
-1630   5B6D             GETKEY_E:
-1631   5B6D             
-1632   5B6D             ; ---------------------------------------------------------------------
-1633   5B6D             ;  drawing
-1634   5B6D             ; ---------------------------------------------------------------------
-1635   5B6D CE 40 00    CLS:    LDX #$4000
-1636   5B70 96 C6               LDAA BGB
-1637   5B72 A7 00       CL_L:   STAA 0,X
-1638   5B74 08                  INX
-1639   5B75 8C 4C 00            CPX #$4C00
-1640   5B78 26 F8               BNE CL_L
-1641   5B7A 39                  RTS
-1642   5B7B             
-1643   5B7B             ; PUTC: A = ASCII ($20-$5F), draws 3x5 glyph at (TCOL,TROW) in FGB on BGB
-1644   5B7B 80 20       PUTC:   SUBA #$20
-1645   5B7D 81 40               CMPA #64
-1646   5B7F 25 01               BCS PC_OK
-1647   5B81 4F                  CLRA
-1648   5B82 C6 05       PC_OK:  LDAB #5
-1649   5B84 3D                  MUL
-1650   5B85 C3 61 71            ADDD #FONT
-1651   5B88 DD C7               STD TPTR
-1652   5B8A 96 C4               LDAA TROW
-1653   5B8C C6 20               LDAB #32
-1654   5B8E 3D                  MUL
-1655   5B8F C3 40 00            ADDD #$4000
-1656   5B92 DB C3               ADDB TCOL
-1657   5B94 DD CA               STD DSCR
-1658   5B96 86 05               LDAA #5
-1659   5B98 97 D4               STAA U1
-1660   5B9A DE C7       PC_L:   LDX TPTR
-1661   5B9C A6 00               LDAA 0,X
-1662   5B9E 08                  INX
-1663   5B9F DF C7               STX TPTR
-1664   5BA1 16                  TAB
-1665   5BA2 94 C5               ANDA FGB
-1666   5BA4 53                  COMB
-1667   5BA5 D4 C6               ANDB BGB
-1668   5BA7 1B                  ABA
-1669   5BA8 DE CA               LDX DSCR
-1670   5BAA A7 00               STAA 0,X
-1671   5BAC C6 20               LDAB #32
-1672   5BAE 3A                  ABX
-1673   5BAF DF CA               STX DSCR
-1674   5BB1 7A 00 D4            DEC U1
-1675   5BB4 26 E4               BNE PC_L
-1676   5BB6 96 C6               LDAA BGB
-1677   5BB8 DE CA               LDX DSCR
-1678   5BBA A7 00               STAA 0,X
-1679   5BBC 7C 00 C3            INC TCOL
-1680   5BBF 39                  RTS
-1681   5BC0             ; PUTS: X -> zero-terminated string
-1682   5BC0 A6 00       PUTS:   LDAA 0,X
-1683   5BC2 27 08               BEQ PS_R
-1684   5BC4 3C                  PSHX
-1685   5BC5 BD 5B 7B            JSR PUTC
-1686   5BC8 38                  PULX
-1687   5BC9 08                  INX
-1688   5BCA 20 F4               BRA PUTS
-1689   5BCC 39          PS_R:   RTS
-1690   5BCD             ; PUT6: X -> exactly six characters
-1691   5BCD C6 06       PUT6:   LDAB #6
-1692   5BCF D7 D6               STAB U3
-1693   5BD1 A6 00       P6_L:   LDAA 0,X
-1694   5BD3 3C                  PSHX
-1695   5BD4 BD 5B 7B            JSR PUTC
-1696   5BD7 38                  PULX
-1697   5BD8 08                  INX
-1698   5BD9 7A 00 D6            DEC U3
-1699   5BDC 26 F3               BNE P6_L
-1700   5BDE 39                  RTS
-1701   5BDF             ; PRTAT: A=col B=row X=string(zero-terminated)
-1702   5BDF 97 C3       PRTAT:  STAA TCOL
-1703   5BE1 D7 C4               STAB TROW
-1704   5BE3 20 DB               BRA PUTS
-1705   5BE5             
-1706   5BE5             ; BLIT a 12x11 tile: DSCR, SPRP, TMB, SQB0/SQB1 set up by caller
-1707   5BE5 86 0B       BLIT:   LDAA #11
-1708   5BE7 97 D1               STAA DROWS
-1709   5BE9 DE CF       BL_ROW: LDX SPRP
-1710   5BEB A6 00               LDAA 0,X
-1711   5BED 16                  TAB
-1712   5BEE 94 CE               ANDA TMB
-1713   5BF0 53                  COMB
-1714   5BF1 D4 CC               ANDB SQB0
-1715   5BF3 1B                  ABA
-1716   5BF4 97 D7               STAA R0
-1717   5BF6 A6 01               LDAA 1,X
-1718   5BF8 16                  TAB
-1719   5BF9 94 CE               ANDA TMB
-1720   5BFB 53                  COMB
-1721   5BFC D4 CC               ANDB SQB0
-1722   5BFE 1B                  ABA
-1723   5BFF 97 D8               STAA R1
-1724   5C01 A6 02               LDAA 2,X
-1725   5C03 16                  TAB
-1726   5C04 94 CE               ANDA TMB
-1727   5C06 53                  COMB
-1728   5C07 D4 CC               ANDB SQB0
-1729   5C09 1B                  ABA
-1730   5C0A 97 D9               STAA R2
-1731   5C0C DE CA               LDX DSCR
-1732   5C0E 96 D7               LDAA R0
-1733   5C10 A7 00               STAA 0,X
-1734   5C12 96 D8               LDAA R1
-1735   5C14 A7 01               STAA 1,X
-1736   5C16 96 D9               LDAA R2
-1737   5C18 A7 02               STAA 2,X
-1738   5C1A C6 20               LDAB #32
-1739   5C1C 3A                  ABX
-1740   5C1D DF CA               STX DSCR
-1741   5C1F DC CF               LDD SPRP
-1742   5C21 C3 00 03            ADDD #3
-1743   5C24 DD CF               STD SPRP
-1744   5C26 96 CC               LDAA SQB0
-1745   5C28 D6 CD               LDAB SQB1
-1746   5C2A D7 CC               STAB SQB0
-1747   5C2C 97 CD               STAA SQB1
-1748   5C2E 7A 00 D1            DEC DROWS
-1749   5C31 26 B6               BNE BL_ROW
-1750   5C33 39                  RTS
-1751   5C34             
-1752   5C34             ; DRAWSQ: draw square DQ (0x88) according to the position in MAIL
-1753   5C34 96 C9       DRAWSQ: LDAA DQ
-1754   5C36 84 07               ANDA #7
-1755   5C38 97 D4               STAA U1                 ; file
-1756   5C3A 96 C9               LDAA DQ
-1757   5C3C 44                  LSRA
-1758   5C3D 44                  LSRA
-1759   5C3E 44                  LSRA
-1760   5C3F 44                  LSRA
-1761   5C40 97 D5               STAA U2                 ; rank
-1762   5C42 9B D4               ADDA U1
-1763   5C44 84 01               ANDA #1
-1764   5C46 97 D6               STAA U3                 ; 1 = light square
-1765   5C48 7D 00 B9            TST FLIP
-1766   5C4B 26 08               BNE DS_FL
-1767   5C4D 86 07               LDAA #7
-1768   5C4F 90 D5               SUBA U2
-1769   5C51 97 D5               STAA U2
-1770   5C53 20 06               BRA DS_P
-1771   5C55 86 07       DS_FL:  LDAA #7
-1772   5C57 90 D4               SUBA U1
-1773   5C59 97 D4               STAA U1
-1774   5C5B 96 D4       DS_P:   LDAA U1
-1775   5C5D 48                  ASLA
-1776   5C5E 9B D4               ADDA U1
-1777   5C60 8B 02               ADDA #2
-1778   5C62 97 D4               STAA U1                 ; byte column
-1779   5C64 96 D5               LDAA U2
-1780   5C66 C6 0B               LDAB #11
-1781   5C68 3D                  MUL
-1782   5C69 05                  ASLD
-1783   5C6A 05                  ASLD
-1784   5C6B 05                  ASLD
-1785   5C6C 05                  ASLD
-1786   5C6D 05                  ASLD
-1787   5C6E C3 40 00            ADDD #$4000
-1788   5C71 DB D4               ADDB U1
-1789   5C73 DD CA               STD DSCR
-1790   5C75 86 00               LDAA #C_GRN
-1791   5C77 7D 00 D6            TST U3
-1792   5C7A 27 02               BEQ DS_C
-1793   5C7C 86 55               LDAA #C_YEL
-1794   5C7E 97 CC       DS_C:   STAA SQB0
-1795   5C80 97 CD               STAA SQB1
-1796   5C82 96 C9               LDAA DQ
-1797   5C84 91 BA               CMPA LASTF
-1798   5C86 27 08               BEQ DS_HL
-1799   5C88 91 BB               CMPA LASTT
-1800   5C8A 27 04               BEQ DS_HL
-1801   5C8C 91 C1               CMPA HLF
-1802   5C8E 26 08               BNE DS_NH
-1803   5C90 86 44       DS_HL:  LDAA #$44
-1804   5C92 97 CC               STAA SQB0
-1805   5C94 86 11               LDAA #$11
-1806   5C96 97 CD               STAA SQB1
-1807   5C98 D6 C9       DS_NH:  LDAB DQ
-1808   5C9A CE 7C C0            LDX #MAIL
-1809   5C9D 3A                  ABX
-1810   5C9E A6 00               LDAA 0,X
-1811   5CA0 26 0B               BNE DS_PC
-1812   5CA2 CE 60 0F            LDX #ZEROS
-1813   5CA5 DF CF               STX SPRP
-1814   5CA7 7F 00 CE            CLR TMB
-1815   5CAA 7E 5B E5            JMP BLIT
-1816   5CAD 84 2F       DS_PC:  ANDA #$2F
-1817   5CAF 36                  PSHA
-1818   5CB0 16                  TAB
-1819   5CB1 CE 7C 30            LDX #PTYPE
-1820   5CB4 3A                  ABX
-1821   5CB5 E6 00               LDAB 0,X
-1822   5CB7 CE 5F CE            LDX #GMAP
-1823   5CBA 3A                  ABX
-1824   5CBB A6 00               LDAA 0,X
-1825   5CBD C6 21               LDAB #33
-1826   5CBF 3D                  MUL
-1827   5CC0 C3 60 AB            ADDD #SPRITES
-1828   5CC3 DD CF               STD SPRP
-1829   5CC5 32                  PULA
-1830   5CC6 84 20               ANDA #$20
-1831   5CC8 26 04               BNE DS_BK
-1832   5CCA 86 FF               LDAA #C_RED
-1833   5CCC 20 02               BRA DS_W
-1834   5CCE 86 AA       DS_BK:  LDAA #C_BLU
-1835   5CD0 97 CE       DS_W:   STAA TMB
-1836   5CD2 7E 5B E5            JMP BLIT
-1837   5CD5             
-1838   5CD5             DRAWBOARD:
-1839   5CD5 7F 00 C9            CLR DQ
-1840   5CD8 BD 5C 34    DB_L:   JSR DRAWSQ
-1841   5CDB 7C 00 C9            INC DQ
-1842   5CDE 96 C9               LDAA DQ
-1843   5CE0 85 08               BITA #8
-1844   5CE2 27 F4               BEQ DB_L
-1845   5CE4 8B 08               ADDA #8
-1846   5CE6 97 C9               STAA DQ
-1847   5CE8 81 80               CMPA #$80
-1848   5CEA 26 EC               BNE DB_L
-1849   5CEC 39                  RTS
-1850   5CED             
-1851   5CED             ; labels around the board and static text of the side panel
-1852   5CED             DRAWSTATIC:
-1853   5CED 86 55               LDAA #C_YEL
-1854   5CEF 97 C5               STAA FGB
-1855   5CF1 7F 00 DE            CLR LBLI
-1856   5CF4 96 DE       DL_R:   LDAA LBLI               ; rank digits, one per screen row
-1857   5CF6 7D 00 B9            TST FLIP
-1858   5CF9 26 08               BNE DL_R1
-1859   5CFB 86 07               LDAA #7
-1860   5CFD 90 DE               SUBA LBLI               ; A = 7 - row
-1861   5CFF 8B 31               ADDA #$31
-1862   5D01 20 02               BRA DL_R2
-1863   5D03 8B 31       DL_R1:  ADDA #$31
-1864   5D05 36          DL_R2:  PSHA
-1865   5D06 96 DE               LDAA LBLI
-1866   5D08 C6 0B               LDAB #11
-1867   5D0A 3D                  MUL
-1868   5D0B CB 03               ADDB #3
-1869   5D0D D7 C4               STAB TROW
-1870   5D0F 7F 00 C3            CLR TCOL
-1871   5D12 32                  PULA
-1872   5D13 BD 5B 7B            JSR PUTC
-1873   5D16 7C 00 DE            INC LBLI
-1874   5D19 96 DE               LDAA LBLI
-1875   5D1B 81 08               CMPA #8
-1876   5D1D 26 D5               BNE DL_R
-1877   5D1F 7F 00 DE            CLR LBLI
-1878   5D22 96 DE       DL_F:   LDAA LBLI               ; file letters under the board
-1879   5D24 7D 00 B9            TST FLIP
-1880   5D27 26 04               BNE DL_F1
-1881   5D29 8B 41               ADDA #$41
-1882   5D2B 20 04               BRA DL_F2
-1883   5D2D 86 48       DL_F1:  LDAA #$48
-1884   5D2F 90 DE               SUBA LBLI
-1885   5D31 36          DL_F2:  PSHA
-1886   5D32 96 DE               LDAA LBLI
-1887   5D34 48                  ASLA
-1888   5D35 9B DE               ADDA LBLI
-1889   5D37 8B 03               ADDA #3
-1890   5D39 97 C3               STAA TCOL
-1891   5D3B 86 59               LDAA #89
-1892   5D3D 97 C4               STAA TROW
-1893   5D3F 32                  PULA
-1894   5D40 BD 5B 7B            JSR PUTC
-1895   5D43 7C 00 DE            INC LBLI
-1896   5D46 96 DE               LDAA LBLI
-1897   5D48 81 08               CMPA #8
-1898   5D4A 26 D6               BNE DL_F
-1899   5D4C 86 1A               LDAA #26
-1900   5D4E C6 00               LDAB #0
-1901   5D50 CE 5E BF            LDX #T_MICRO
-1902   5D53 BD 5B DF            JSR PRTAT
-1903   5D56 86 1A               LDAA #26
-1904   5D58 C6 06               LDAB #6
-1905   5D5A CE 5E C5            LDX #T_CHESS
-1906   5D5D BD 5B DF            JSR PRTAT
-1907   5D60 86 1A               LDAA #26
-1908   5D62 C6 0C               LDAB #12
-1909   5D64 CE 5E CB            LDX #T_16K
-1910   5D67 BD 5B DF            JSR PRTAT
-1911   5D6A 86 1A               LDAA #26
-1912   5D6C C6 12               LDAB #18
-1913   5D6E CE 5E CF            LDX #T_YOUW
-1914   5D71 7D 00 B8            TST HUMAN
-1915   5D74 27 03               BEQ DSP1
-1916   5D76 CE 5E D5            LDX #T_YOUB
-1917   5D79 BD 5B DF    DSP1:   JSR PRTAT
-1918   5D7C 86 1A               LDAA #26
-1919   5D7E C6 4E               LDAB #78
-1920   5D80 CE 5E DB            LDX #T_NEW
-1921   5D83 BD 5B DF            JSR PRTAT
-1922   5D86 86 1A               LDAA #26
-1923   5D88 C6 54               LDAB #84
-1924   5D8A CE 5E E1            LDX #T_QUIT
-1925   5D8D BD 5B DF            JSR PRTAT
-1926   5D90 39                  RTS
-1927   5D91             
-1928   5D91             DRAWMOVES:
-1929   5D91 86 55               LDAA #C_YEL
-1930   5D93 97 C5               STAA FGB
-1931   5D95 86 1A               LDAA #26
-1932   5D97 C6 1E               LDAB #30
-1933   5D99 CE 80 70            LDX #HTXT
-1934   5D9C BD 5B DF            JSR PRTAT
-1935   5D9F 86 1A               LDAA #26
-1936   5DA1 C6 24               LDAB #36
-1937   5DA3 CE 80 78            LDX #CTXT
-1938   5DA6 7E 5B DF            JMP PRTAT
-1939   5DA9             
-1940   5DA9             ; typed-move echo
-1941   5DA9             DRAWINPUT:
-1942   5DA9 86 55               LDAA #C_YEL
-1943   5DAB 97 C5               STAA FGB
-1944   5DAD 5F                  CLRB
-1945   5DAE D1 BC       DI_L:   CMPB INLEN
-1946   5DB0 25 0E               BCS DI_CH
-1947   5DB2 26 08               BNE DI_BL
-1948   5DB4 C1 04               CMPB #4
-1949   5DB6 24 04               BCC DI_BL
-1950   5DB8 86 5F               LDAA #$5F
-1951   5DBA 20 0A               BRA DI_ST
-1952   5DBC 86 20       DI_BL:  LDAA #$20
-1953   5DBE 20 06               BRA DI_ST
-1954   5DC0 CE 00 BD    DI_CH:  LDX #INBUF
-1955   5DC3 3A                  ABX
-1956   5DC4 A6 00               LDAA 0,X
-1957   5DC6 CE 80 80    DI_ST:  LDX #INTXT
-1958   5DC9 3A                  ABX
-1959   5DCA A7 00               STAA 0,X
-1960   5DCC 5C                  INCB
-1961   5DCD C1 06               CMPB #6
-1962   5DCF 26 DD               BNE DI_L
-1963   5DD1 6F 01               CLR 1,X
-1964   5DD3 86 1A               LDAA #26
-1965   5DD5 C6 42               LDAB #66
-1966   5DD7 CE 80 80            LDX #INTXT
-1967   5DDA 7E 5B DF            JMP PRTAT
-1968   5DDD             
-1969   5DDD             ; status message: three 6-char lines from MSGTAB
-1970   5DDD 96 DA       STATUS: LDAA MSGID
-1971   5DDF C6 12               LDAB #18
-1972   5DE1 3D                  MUL
-1973   5DE2 C3 5F 3E            ADDD #MSGTAB
-1974   5DE5 DD C7               STD TPTR
-1975   5DE7 86 FF               LDAA #C_RED
-1976   5DE9 97 C5               STAA FGB
-1977   5DEB 86 1A               LDAA #26
-1978   5DED 97 C3               STAA TCOL
-1979   5DEF 86 30               LDAA #48
-1980   5DF1 97 C4               STAA TROW
-1981   5DF3 DE C7               LDX TPTR
-1982   5DF5 BD 5B CD            JSR PUT6
-1983   5DF8 86 1A               LDAA #26
-1984   5DFA 97 C3               STAA TCOL
-1985   5DFC 86 36               LDAA #54
-1986   5DFE 97 C4               STAA TROW
-1987   5E00 BD 5B CD            JSR PUT6
-1988   5E03 86 1A               LDAA #26
-1989   5E05 97 C3               STAA TCOL
-1990   5E07 86 3C               LDAA #60
-1991   5E09 97 C4               STAA TROW
-1992   5E0B BD 5B CD            JSR PUT6
-1993   5E0E 39                  RTS
-1994   5E0F             
-1995   5E0F             ; ---------------------------------------------------------------------
-1996   5E0F             ;  title screen / colour choice
-1997   5E0F             ; ---------------------------------------------------------------------
-1998   5E0F             TITLESCR:
-1999   5E0F 7F 00 C6            CLR BGB
-2000   5E12 BD 5B 6D            JSR CLS
-2001   5E15 7F 00 DE            CLR LBLI
-2002   5E18 86 05       TS_B:   LDAA #5
-2003   5E1A 90 DE               SUBA LBLI
-2004   5E1C C6 21               LDAB #33
-2005   5E1E 3D                  MUL
-2006   5E1F C3 60 AB            ADDD #SPRITES
-2007   5E22 DD CF               STD SPRP
-2008   5E24 96 DE               LDAA LBLI
-2009   5E26 84 01               ANDA #1
-2010   5E28 26 08               BNE TS_ODD
-2011   5E2A 86 FF               LDAA #C_RED
-2012   5E2C 97 CE               STAA TMB
-2013   5E2E 86 55               LDAA #C_YEL
-2014   5E30 20 06               BRA TS_P
-2015   5E32 86 AA       TS_ODD: LDAA #C_BLU
-2016   5E34 97 CE               STAA TMB
-2017   5E36 86 00               LDAA #C_GRN
-2018   5E38 97 CC       TS_P:   STAA SQB0
-2019   5E3A 97 CD               STAA SQB1
-2020   5E3C 96 DE               LDAA LBLI
-2021   5E3E 48                  ASLA
-2022   5E3F 9B DE               ADDA LBLI
-2023   5E41 8B 07               ADDA #7
-2024   5E43 97 D4               STAA U1
-2025   5E45 CC 41 00            LDD #$4100
-2026   5E48 DB D4               ADDB U1
-2027   5E4A DD CA               STD DSCR
-2028   5E4C BD 5B E5            JSR BLIT
-2029   5E4F 7C 00 DE            INC LBLI
-2030   5E52 96 DE               LDAA LBLI
-2031   5E54 81 06               CMPA #6
-2032   5E56 26 C0               BNE TS_B
-2033   5E58 86 FF               LDAA #C_RED
-2034   5E5A 97 C5               STAA FGB
-2035   5E5C 86 0B               LDAA #11
-2036   5E5E C6 1A               LDAB #26
-2037   5E60 CE 5E E8            LDX #T_TITLE
-2038   5E63 BD 5B DF            JSR PRTAT
-2039   5E66 86 55               LDAA #C_YEL
-2040   5E68 97 C5               STAA FGB
-2041   5E6A 86 08               LDAA #8
-2042   5E6C C6 22               LDAB #34
-2043   5E6E CE 5E F3            LDX #T_SUB1
-2044   5E71 BD 5B DF            JSR PRTAT
-2045   5E74 86 04               LDAA #4
-2046   5E76 C6 2A               LDAB #42
-2047   5E78 CE 5F 03            LDX #T_SUB2
-2048   5E7B BD 5B DF            JSR PRTAT
-2049   5E7E 86 0C               LDAA #12
-2050   5E80 C6 3C               LDAB #60
-2051   5E82 CE 5F 1B            LDX #T_PLAY
-2052   5E85 BD 5B DF            JSR PRTAT
-2053   5E88 86 FF               LDAA #C_RED
-2054   5E8A 97 C5               STAA FGB
-2055   5E8C 86 08               LDAA #8
-2056   5E8E C6 44               LDAB #68
-2057   5E90 CE 5F 24            LDX #T_CHOOSE
-2058   5E93 BD 5B DF            JSR PRTAT
-2059   5E96 86 55               LDAA #C_YEL
-2060   5E98 97 C5               STAA FGB
-2061   5E9A 86 0C               LDAA #12
-2062   5E9C C6 54               LDAB #84
-2063   5E9E CE 5F 35            LDX #T_QUIT2
-2064   5EA1 BD 5B DF            JSR PRTAT
-2065   5EA4 BD 5B 3F    TS_K:   JSR GETKEY
-2066   5EA7 81 57               CMPA #$57               ; W
-2067   5EA9 27 0B               BEQ TS_W
-2068   5EAB 81 42               CMPA #$42               ; B
-2069   5EAD 27 0B               BEQ TS_BL
-2070   5EAF 81 51               CMPA #$51               ; Q
-2071   5EB1 26 F1               BNE TS_K
-2072   5EB3 7E 5A 6C            JMP QUIT
-2073   5EB6 7F 00 B8    TS_W:   CLR HUMAN
-2074   5EB9 39                  RTS
-2075   5EBA 86 20       TS_BL:  LDAA #$20
-2076   5EBC 97 B8               STAA HUMAN
-2077   5EBE 39                  RTS
-2078   5EBF             
-2079   5EBF             ; ---------------------------------------------------------------------
-2080   5EBF             ;  data
-2081   5EBF             ; ---------------------------------------------------------------------
-2082   5EBF 4D4943524F00T_MICRO: .strz "MICRO"
-2083   5EC5 434845535300T_CHESS: .strz "CHESS"
-2084   5ECB 31 36 4B 00 T_16K:  .strz "16K"
-2085   5ECF 594F553D5700T_YOUW: .strz "YOU=W"
-2086   5ED5 594F553D4200T_YOUB: .strz "YOU=B"
-2087   5EDB 4E3D4E455700T_NEW:  .strz "N=NEW"
-2088   5EE1 513D5155495400T_QUIT: .strz "Q=QUIT"
-2089   5EE8 4D4943524F434845T_TITLE: .strz "MICROCHESS"
-2089   5EF0 535300      
-2090   5EF3 54414E4459204D43T_SUB1: .strz "TANDY MC-10 16K"
-2090   5EFB 2D31302031364B00
-2091   5F03 4241534544204F4ET_SUB2: .strz "BASED ON PETER JENNINGS"
-2091   5F0B 205045544552204A
-2091   5F13 454E4E494E475300
-2092   5F1B 504C41592041533AT_PLAY: .strz "PLAY AS:"
-2092   5F23 00          
-2093   5F24 573D574849544520T_CHOOSE: .strz "W=WHITE  B=BLACK"
-2093   5F2C 20423D424C41434B
-2093   5F34 00          
-2094   5F35 51203D2051554954T_QUIT2: .strz "Q = QUIT"
-2094   5F3D 00          
-2095   5F3E 594F555220204D4FMSGTAB: .text "YOUR  MOVE        "
-2095   5F46 5645202020202020
-2095   5F4E 2020        
-2096   5F50 5448494E4B20494E        .text "THINK ING...      "
-2096   5F58 472E2E2E20202020
-2096   5F60 2020        
-2097   5F62 434845434B21594F        .text "CHECK!YOUR  MOVE  "
-2097   5F6A 555220204D4F5645
-2097   5F72 2020        
-2098   5F74 4241442020204D4F        .text "BAD   MOVE!       "
-2098   5F7C 5645212020202020
-2098   5F84 2020        
-2099   5F86 4D4154452120594F        .text "MATE! YOU   WIN!  "
-2099   5F8E 5520202057494E21
-2099   5F96 2020        
-2100   5F98 4D41544521204350        .text "MATE! CPU   WINS  "
-2100   5FA0 5520202057494E53
-2100   5FA8 2020        
-2101   5FAA 5354414C452D4D41        .text "STALE-MATE! DRAW  "
-2101   5FB2 5445212044524157
-2101   5FBA 2020        
-2102   5FBC 434845434B215448        .text "CHECK!THINK       "
-2102   5FC4 494E4B2020202020
-2102   5FCC 2020        
-2103   5FCE 0003020401000000GMAP:   .BYTE 0,3,2,4,1,0,0,0,5,0,0,0,0,0,0,0,0
-2103   5FD6 0500000000000000
-2103   5FDE 00          
-2104   5FDF 0041424344454647KEYTAB: .BYTE $00,$41,$42,$43,$44,$45,$46,$47
-2105   5FE7 48494A4B4C4D4E4F        .BYTE $48,$49,$4A,$4B,$4C,$4D,$4E,$4F
-2106   5FEF 5051525354555657        .BYTE $50,$51,$52,$53,$54,$55,$56,$57
-2107   5FF7 58595A0000000D20        .BYTE $58,$59,$5A,$00,$00,$00,$0D,$20
-2108   5FFF 3031323334353637        .BYTE $30,$31,$32,$33,$34,$35,$36,$37
-2109   6007 38393A3B2C2D2E2F        .BYTE $38,$39,$3A,$3B,$2C,$2D,$2E,$2F
-2110   600F 0000000000000000ZEROS:  .fill 33
-2110   6017 0000000000000000
-2110   601F 0000000000000000
-2110   6027 0000000000000000
-2110   602F 00          
-2111   6030 4D4943524F434845        .strz "MICROCHESS (C) 1996-2002 PETER JENNINGS PETERJ@BENLO.COM"
-2111   6038 5353202843292031
-2111   6040 3939362D32303032
-2111   6048 205045544552204A
-2111   6050 454E4E494E475320
-2111   6058 50455445524A4042
-2111   6060 454E4C4F2E434F4D
-2111   6068 00          
-2112   6069 4D432D3130203136        .strz "MC-10 16K NATIVE 6803 PORT: CASTLING, EN PASSANT, 128X96 GRAPHICS"
-2112   6071 4B204E4154495645
-2112   6079 203638303320504F
-2112   6081 52543A2043415354
-2112   6089 4C494E472C20454E
-2112   6091 2050415353414E54
-2112   6099 2C20313238583936
-2112   60A1 2047524150484943
-2112   60A9 5300        
-2113   60AB             SPRITES:
-2114   60AB 000000000000003C        .BYTE $00,$00,$00,$00,$00,$00,$00,$3C,$00,$00,$FF,$00,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0
-2114   60B3 0000FF0000FF0000
-2114   60BB 3C0000FF0003FFC0
-2114   60C3 00FF0003FFC00FFF
-2114   60CB F0          
-2115   60CC 003C0000FF0003FF        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$C0,$3C,$FF,$C0,$30,$3F,$F0,$00,$3F,$F0,$00,$FF,$F0,$00,$FF,$F0,$03,$FF,$F0,$0F,$FF,$FC
-2115   60D4 C00FFFC03CFFC030
-2115   60DC 3FF0003FF000FFF0
-2115   60E4 00FFF003FFF00FFF
-2115   60EC FC          
-2116   60ED 003C0000FF0003FF        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$03,$F3,$C0,$03,$CF,$C0,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
-2116   60F5 C003F3C003CFC000
-2116   60FD FF00003C0000FF00
-2116   6105 03FFC00FFFF03FFF
-2116   610D FC          
-2117   610E 3CFF3C3FFFFC0FFF        .BYTE $3C,$FF,$3C,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
-2117   6116 F003FFC003FFC003
-2117   611E FFC003FFC003FFC0
-2117   6126 0FFFF03FFFFC3FFF
-2117   612E FC          
-2118   612F C33CC3F3FFFC3FFF        .BYTE $C3,$3C,$C3,$F3,$FF,$FC,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
-2118   6137 FC0FFFF003FFC003
-2118   613F FFC000FF0003FFC0
-2118   6147 0FFFF03FFFFC3FFF
-2118   614F FC          
-2119   6150 003C00033CC00FF3        .BYTE $00,$3C,$00,$03,$3C,$C0,$0F,$F3,$F0,$03,$3C,$C0,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
-2119   6158 F0033CC00FFFF003
-2119   6160 FFC003FFC000FF00
-2119   6168 03FFC00FFFF03FFF
-2119   6170 FC          
-2120   6171             FONT:
-2121   6171 0000000000303030        .BYTE $00,$00,$00,$00,$00,$30,$30,$30,$00,$30,$00,$00,$00,$00,$00
-2121   6179 00300000000000
-2122   6180 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
-2122   6188 00000000000000
-2123   618F 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$30,$C0,$C0,$C0,$30
-2123   6197 000030C0C0C030
-2124   619E 300C0C0C30CC30FC        .BYTE $30,$0C,$0C,$0C,$30,$CC,$30,$FC,$30,$CC,$00,$30,$FC,$30,$00
-2124   61A6 30CC0030FC3000
-2125   61AD 00000000000000FC        .BYTE $00,$00,$00,$00,$00,$00,$00,$FC,$00,$00,$00,$00,$00,$00,$30
-2125   61B5 00000000000030
-2126   61BC 0C0C30C0C0FCCCCC        .BYTE $0C,$0C,$30,$C0,$C0,$FC,$CC,$CC,$CC,$FC,$30,$F0,$30,$30,$FC
-2126   61C4 CCFC30F03030FC
-2127   61CB F00C30C0FCF00C30        .BYTE $F0,$0C,$30,$C0,$FC,$F0,$0C,$30,$0C,$F0,$CC,$CC,$FC,$0C,$0C
-2127   61D3 0CF0CCCCFC0C0C
-2128   61DA FCC0F00CF03CC0F0        .BYTE $FC,$C0,$F0,$0C,$F0,$3C,$C0,$F0,$CC,$30,$FC,$0C,$30,$30,$30
-2128   61E2 CC30FC0C303030
-2129   61E9 FCCCFCCCFCFCCCFC        .BYTE $FC,$CC,$FC,$CC,$FC,$FC,$CC,$FC,$0C,$F0,$00,$30,$00,$30,$00
-2129   61F1 0CF00030003000
-2130   61F8 00000000000C30C0        .BYTE $00,$00,$00,$00,$00,$0C,$30,$C0,$30,$0C,$00,$FC,$00,$FC,$00
-2130   6200 300C00FC00FC00
-2131   6207 C0300C30C0F00C30        .BYTE $C0,$30,$0C,$30,$C0,$F0,$0C,$30,$00,$30,$00,$00,$00,$00,$00
-2131   620F 00300000000000
-2132   6216 30CCFCCCCCF0CCF0        .BYTE $30,$CC,$FC,$CC,$CC,$F0,$CC,$F0,$CC,$F0,$3C,$C0,$C0,$C0,$3C
-2132   621E CCF03CC0C0C03C
-2133   6225 F0CCCCCCF0FCC0F0        .BYTE $F0,$CC,$CC,$CC,$F0,$FC,$C0,$F0,$C0,$FC,$FC,$C0,$F0,$C0,$C0
-2133   622D C0FCFCC0F0C0C0
-2134   6234 3CC0CCCC3CCCCCFC        .BYTE $3C,$C0,$CC,$CC,$3C,$CC,$CC,$FC,$CC,$CC,$FC,$30,$30,$30,$FC
-2134   623C CCCCFC303030FC
-2135   6243 0C0C0CCC30CCCCF0        .BYTE $0C,$0C,$0C,$CC,$30,$CC,$CC,$F0,$CC,$CC,$C0,$C0,$C0,$C0,$FC
-2135   624B CCCCC0C0C0C0FC
-2136   6252 CCFCFCCCCCF0CCCC        .BYTE $CC,$FC,$FC,$CC,$CC,$F0,$CC,$CC,$CC,$CC,$30,$CC,$CC,$CC,$30
-2136   625A CCCC30CCCCCC30
-2137   6261 F0CCF0C0C030CCCC        .BYTE $F0,$CC,$F0,$C0,$C0,$30,$CC,$CC,$FC,$3C,$F0,$CC,$F0,$CC,$CC
-2137   6269 FC3CF0CCF0CCCC
-2138   6270 3CC0300CF0FC3030        .BYTE $3C,$C0,$30,$0C,$F0,$FC,$30,$30,$30,$30,$CC,$CC,$CC,$CC,$FC
-2138   6278 3030CCCCCCCCFC
-2139   627F CCCCCCCC30CCCCFC        .BYTE $CC,$CC,$CC,$CC,$30,$CC,$CC,$FC,$FC,$CC,$CC,$CC,$30,$CC,$CC
-2139   6287 FCCCCCCC30CCCC
-2140   628E CCCC303030FC0C30        .BYTE $CC,$CC,$30,$30,$30,$FC,$0C,$30,$C0,$FC,$00,$00,$00,$00,$00
-2140   6296 C0FC0000000000
-2141   629D 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
-2141   62A5 00000000000000
-2142   62AC 00000000FC          .BYTE $00,$00,$00,$00,$FC
-2143   62B1                     .END $5000
+1245   5884             BKP     .EQU $E3        ; word
+1246   5884             BKI     .EQU $E5
+1247   5884             BKN     .EQU $E6
+1248   5884             BKN2    .EQU $E7
+1249   5884             BKL     .EQU $E8
+1250   5884             BKC     .EQU $E9
+1251   5884             BKR     .EQU $EA
+1252   5884             BKF     .EQU $EB
+1253   5884             BKT     .EQU $EC
+1254   5884             HLEN    .EQU $ED        ; plies played this game
+1255   5884             RNDS    .EQU $EE
+1256   5884             SELFF   .EQU $EF        ; 1 = hidden self-play chosen on the title screen
+1257   5884             SW      .EQU $F0        ; self-play tallies
+1258   5884             SB      .EQU $F1
+1259   5884             SD      .EQU $F2
+1260   5884             NV      .EQU $F3
+1261   5884             NC      .EQU $F4
+1262   5884             SPMAX   .EQU 200        ; self-play: games longer than this many plies are drawn
+1263   5884             
+1264   5884             HIST    .EQU RAM+$490   ; first four plies (from,to)
+1265   5884             HTXT    .EQU RAM+$470   ; "U:E2E4",0
+1266   5884             CTXT    .EQU RAM+$478   ; "C:E7E5",0
+1267   5884             INTXT   .EQU RAM+$480   ; typed move echo
+1268   5884             
+1269   5884             GFXMODE .EQU $24        ; CG3 128x96x4, CSS0 palette (green/yellow/blue/red)
+1270   5884             TXTMODE .EQU $00        ; (verified against ROM at test time)
+1271   5884             C_YEL   .EQU $55
+1272   5884             C_RED   .EQU $FF
+1273   5884             C_BLU   .EQU $AA
+1274   5884             C_GRN   .EQU $00
+1275   5884             
+1276   5884             ; ---------------------------------------------------------------------
+1277   5884             ;  program entry
+1278   5884             ; ---------------------------------------------------------------------
+1279   5884 0F          START:  SEI
+1280   5885 7F 00 E1            CLR LASTK
+1281   5888 8E 8F FF            LDS #$8FFF
+1282   588B 86 FF               LDAA #$FF
+1283   588D 97 00               STAA $00                ; port 1 = keyboard strobe outputs
+1284   588F 86 24               LDAA #GFXMODE
+1285   5891 B7 BF FF            STAA $BFFF
+1286   5894 BD 5E 57    TITLE:  JSR TITLESCR
+1287   5897 7D 00 EF            TST SELFF
+1288   589A 27 03               BEQ NEWGAME
+1289   589C 7E 61 D5            JMP SELFPLAY
+1290   589F BD 50 49    NEWGAME: JSR NEWPOS
+1291   58A2 7F 00 ED            CLR HLEN
+1292   58A5 86 FF               LDAA #$FF
+1293   58A7 97 BA               STAA LASTF
+1294   58A9 97 BB               STAA LASTT
+1295   58AB 97 C1               STAA HLF
+1296   58AD 7F 00 BC            CLR INLEN
+1297   58B0 7F 00 C2            CLR GSTATE
+1298   58B3 96 B8               LDAA HUMAN
+1299   58B5 27 02               BEQ NG_F
+1300   58B7 86 01               LDAA #1
+1301   58B9 97 B9       NG_F:   STAA FLIP
+1302   58BB 7F 00 C6            CLR BGB
+1303   58BE BD 5B 9D            JSR CLS
+1304   58C1 CE 80 70            LDX #HTXT
+1305   58C4 BD 5A F4            JSR INITTXT
+1306   58C7 CE 80 78            LDX #CTXT
+1307   58CA BD 5A F4            JSR INITTXT
+1308   58CD 86 43               LDAA #$43
+1309   58CF B7 80 78            STAA CTXT
+1310   58D2 BD 5D 1D            JSR DRAWSTATIC
+1311   58D5 BD 5D 05            JSR DRAWBOARD
+1312   58D8 BD 5D D9            JSR DRAWMOVES
+1313   58DB BD 57 E7    GLOOP:  JSR LISTMOVES
+1314   58DE 97 D3               STAA MCNT
+1315   58E0 26 2D               BNE GL_HAVE
+1316   58E2 BD 54 68            JSR INCHECK             ; no legal moves: mate or stalemate
+1317   58E5 4D                  TSTA
+1318   58E6 27 0E               BEQ GL_STALE
+1319   58E8 96 84               LDAA MYC
+1320   58EA 91 B8               CMPA HUMAN
+1321   58EC 27 04               BEQ GL_LOSE
+1322   58EE 86 04               LDAA #4                 ; you win
+1323   58F0 20 06               BRA GL_END
+1324   58F2 86 05       GL_LOSE: LDAA #5
+1325   58F4 20 02               BRA GL_END
+1326   58F6 86 06       GL_STALE: LDAA #6
+1327   58F8 97 DA       GL_END: STAA MSGID
+1328   58FA BD 5E 25            JSR STATUS
+1329   58FD 86 01               LDAA #1
+1330   58FF 97 C2               STAA GSTATE
+1331   5901 BD 5B 6F    GL_WAIT: JSR GETKEY
+1332   5904 81 4E               CMPA #$4E               ; N
+1333   5906 27 8C               BEQ TITLE
+1334   5908 81 51               CMPA #$51               ; Q
+1335   590A 26 F5               BNE GL_WAIT
+1336   590C 7E 5A 55            JMP QUIT
+1337   590F BD 54 68    GL_HAVE: JSR INCHECK
+1338   5912 97 DF               STAA CHKF
+1339   5914 96 84               LDAA MYC
+1340   5916 91 B8               CMPA HUMAN
+1341   5918 27 23               BEQ HUMANTURN
+1342   591A             ; ------------------------------------------------------------------ CPU
+1343   591A 86 01       CPUTURN: LDAA #1
+1344   591C 7D 00 DF            TST CHKF
+1345   591F 27 02               BEQ CT_M
+1346   5921 86 07               LDAA #7
+1347   5923 97 DA       CT_M:   STAA MSGID
+1348   5925 BD 5E 25            JSR STATUS
+1349   5928 BD 5A 5F            JSR CPUCALC
+1350   592B BD 5A 89            JSR DOMOVE
+1351   592E CE 80 7A            LDX #CTXT+2
+1352   5931 BD 5A D5            JSR SETTXT
+1353   5934 BD 5D 05            JSR DRAWBOARD
+1354   5937 BD 5D D9            JSR DRAWMOVES
+1355   593A 7E 58 DB            JMP GLOOP
+1356   593D             ; ------------------------------------------------------------------ human
+1357   593D 86 00       HUMANTURN: LDAA #0
+1358   593F 7D 00 DF            TST CHKF
+1359   5942 27 02               BEQ HT_M
+1360   5944 86 02               LDAA #2
+1361   5946 97 DA       HT_M:   STAA MSGID
+1362   5948 BD 5E 25            JSR STATUS
+1363   594B 7F 00 BC            CLR INLEN
+1364   594E 86 FF               LDAA #$FF
+1365   5950 97 C1               STAA HLF
+1366   5952 BD 5D F1            JSR DRAWINPUT
+1367   5955 BD 5B 6F    HT_KEY: JSR GETKEY
+1368   5958 81 4E               CMPA #$4E
+1369   595A 27 57               BEQ HT_NEW
+1370   595C 81 51               CMPA #$51
+1371   595E 26 03               BNE HT_K2
+1372   5960 7E 5A 55            JMP QUIT
+1373   5963 81 1B       HT_K2:  CMPA #27
+1374   5965 27 4F               BEQ HT_CLR
+1375   5967 81 08               CMPA #8
+1376   5969 27 56               BEQ HT_BS
+1377   596B 81 30               CMPA #$30
+1378   596D 27 52               BEQ HT_BS
+1379   596F 81 0D               CMPA #13
+1380   5971 27 60               BEQ HT_ENT
+1381   5973 D6 BC               LDAB INLEN
+1382   5975 C1 04               CMPB #4
+1383   5977 24 DC               BCC HT_KEY
+1384   5979 97 D4               STAA U1                 ; candidate character
+1385   597B C5 01               BITB #1
+1386   597D 26 0A               BNE HT_RANK
+1387   597F 81 41               CMPA #$41               ; file A-H
+1388   5981 25 D2               BCS HT_KEY
+1389   5983 81 49               CMPA #$49
+1390   5985 24 CE               BCC HT_KEY
+1391   5987 20 08               BRA HT_ADD
+1392   5989 81 31       HT_RANK: CMPA #$31              ; rank 1-8
+1393   598B 25 C8               BCS HT_KEY
+1394   598D 81 39               CMPA #$39
+1395   598F 24 C4               BCC HT_KEY
+1396   5991 CE 00 BD    HT_ADD: LDX #INBUF
+1397   5994 3A                  ABX
+1398   5995 96 D4               LDAA U1
+1399   5997 A7 00               STAA 0,X
+1400   5999 7C 00 BC            INC INLEN
+1401   599C 96 BC               LDAA INLEN
+1402   599E 81 02               CMPA #2
+1403   59A0 26 0C               BNE HT_REDR
+1404   59A2 BD 5A 42            JSR PARSEFROM           ; highlight the from-square
+1405   59A5 96 DB               LDAA FROMF
+1406   59A7 97 C1               STAA HLF
+1407   59A9 97 C9               STAA DQ
+1408   59AB BD 5C 64            JSR DRAWSQ
+1409   59AE BD 5D F1    HT_REDR: JSR DRAWINPUT
+1410   59B1 20 A2               BRA HT_KEY
+1411   59B3 7E 58 94    HT_NEW: JMP TITLE
+1412   59B6 BD 5A 32    HT_CLR: JSR UNHL
+1413   59B9 7F 00 BC            CLR INLEN
+1414   59BC BD 5D F1            JSR DRAWINPUT
+1415   59BF 20 94               BRA HT_KEY
+1416   59C1 96 BC       HT_BS:  LDAA INLEN
+1417   59C3 27 90               BEQ HT_KEY
+1418   59C5 7A 00 BC            DEC INLEN
+1419   59C8 96 BC               LDAA INLEN
+1420   59CA 81 01               CMPA #1
+1421   59CC 26 E0               BNE HT_REDR
+1422   59CE BD 5A 32            JSR UNHL
+1423   59D1 20 DB               BRA HT_REDR
+1424   59D3 96 BC       HT_ENT: LDAA INLEN
+1425   59D5 81 04               CMPA #4
+1426   59D7 27 03               BEQ HT_E2
+1427   59D9 7E 59 55            JMP HT_KEY
+1428   59DC             HT_E2:
+1429   59DC BD 5A 32            JSR UNHL
+1430   59DF BD 5A 42            JSR PARSEFROM
+1431   59E2 96 BF               LDAA INBUF+2
+1432   59E4 80 41               SUBA #$41
+1433   59E6 97 D4               STAA U1
+1434   59E8 96 C0               LDAA INBUF+3
+1435   59EA 80 31               SUBA #$31
+1436   59EC 48                  ASLA
+1437   59ED 48                  ASLA
+1438   59EE 48                  ASLA
+1439   59EF 48                  ASLA
+1440   59F0 9A D4               ORAA U1
+1441   59F2 97 DC               STAA TOF
+1442   59F4 CE 7E 60            LDX #MLIST              ; is it in the legal list?
+1443   59F7 D6 D3               LDAB MCNT
+1444   59F9 A6 00       HT_FND: LDAA 0,X
+1445   59FB 91 DB               CMPA FROMF
+1446   59FD 26 06               BNE HT_NX
+1447   59FF A6 01               LDAA 1,X
+1448   5A01 91 DC               CMPA TOF
+1449   5A03 27 15               BEQ HT_OK
+1450   5A05 08          HT_NX:  INX
+1451   5A06 08                  INX
+1452   5A07 5A                  DECB
+1453   5A08 26 EF               BNE HT_FND
+1454   5A0A 86 03               LDAA #3                 ; not legal
+1455   5A0C 97 DA               STAA MSGID
+1456   5A0E BD 5E 25            JSR STATUS
+1457   5A11 7F 00 BC            CLR INLEN
+1458   5A14 BD 5D F1            JSR DRAWINPUT
+1459   5A17 7E 59 55            JMP HT_KEY
+1460   5A1A BD 5A 89    HT_OK:  JSR DOMOVE
+1461   5A1D CE 80 72            LDX #HTXT+2
+1462   5A20 BD 5A D5            JSR SETTXT
+1463   5A23 7F 00 BC            CLR INLEN
+1464   5A26 BD 5D F1            JSR DRAWINPUT
+1465   5A29 BD 5D 05            JSR DRAWBOARD
+1466   5A2C BD 5D D9            JSR DRAWMOVES
+1467   5A2F 7E 58 DB            JMP GLOOP
+1468   5A32 96 C1       UNHL:   LDAA HLF
+1469   5A34 81 FF               CMPA #$FF
+1470   5A36 27 09               BEQ UH_R
+1471   5A38 97 C9               STAA DQ
+1472   5A3A 86 FF               LDAA #$FF
+1473   5A3C 97 C1               STAA HLF
+1474   5A3E BD 5C 64            JSR DRAWSQ
+1475   5A41 39          UH_R:   RTS
+1476   5A42             PARSEFROM:
+1477   5A42 96 BD               LDAA INBUF
+1478   5A44 80 41               SUBA #$41
+1479   5A46 97 D4               STAA U1
+1480   5A48 96 BE               LDAA INBUF+1
+1481   5A4A 80 31               SUBA #$31
+1482   5A4C 48                  ASLA
+1483   5A4D 48                  ASLA
+1484   5A4E 48                  ASLA
+1485   5A4F 48                  ASLA
+1486   5A50 9A D4               ORAA U1
+1487   5A52 97 DB               STAA FROMF
+1488   5A54 39                  RTS
+1489   5A55 86 00       QUIT:   LDAA #TXTMODE
+1490   5A57 B7 BF FF            STAA $BFFF
+1491   5A5A FE FF FE            LDX $FFFE               ; cold start BASIC
+1492   5A5D 6E 00               JMP 0,X
+1493   5A5F             
+1494   5A5F             ; ---------------------------------------------------------------------
+1495   5A5F             ;  CPUCALC: choose the computer's move (book, else search) -> FROMF/TOF.
+1496   5A5F             ;           MLIST must hold the current legal list (MCNT > 0).
+1497   5A5F             ; ---------------------------------------------------------------------
+1498   5A5F BD 61 17    CPUCALC: JSR BOOKMV
+1499   5A62 26 24               BNE CC_R
+1500   5A64 BD 57 C9            JSR GO
+1501   5A67 7D 00 B2            TST SEARCHOK
+1502   5A6A 27 11               BEQ CC_FB
+1503   5A6C D6 84               LDAB MYC                ; best piece's from-square
+1504   5A6E DA A1               ORAB BESTP
+1505   5A70 CE 7C 00            LDX #SQ
+1506   5A73 3A                  ABX
+1507   5A74 A6 00               LDAA 0,X
+1508   5A76 97 DB               STAA FROMF
+1509   5A78 96 A2               LDAA BESTM
+1510   5A7A 97 DC               STAA TOF
+1511   5A7C 39                  RTS
+1512   5A7D CE 7E 60    CC_FB:  LDX #MLIST              ; evaluator would resign: play first legal move
+1513   5A80 A6 00               LDAA 0,X
+1514   5A82 97 DB               STAA FROMF
+1515   5A84 A6 01               LDAA 1,X
+1516   5A86 97 DC               STAA TOF
+1517   5A88 39          CC_R:   RTS
+1518   5A89             
+1519   5A89             ; ---------------------------------------------------------------------
+1520   5A89             ;  DOMOVE: play FROMF -> TOF for the side to move, switch sides.
+1521   5A89             ; ---------------------------------------------------------------------
+1522   5A89 D6 84       DOMOVE: LDAB MYC
+1523   5A8B CE 7C 00            LDX #SQ
+1524   5A8E 3A                  ABX
+1525   5A8F 5F                  CLRB                    ; find piece index standing on FROMF
+1526   5A90 A6 00       DM_F:   LDAA 0,X
+1527   5A92 91 DB               CMPA FROMF
+1528   5A94 27 06               BEQ DM_G
+1529   5A96 08                  INX
+1530   5A97 5C                  INCB
+1531   5A98 C1 10               CMPB #16
+1532   5A9A 26 F4               BNE DM_F
+1533   5A9C D7 80       DM_G:   STAB PIECE
+1534   5A9E 96 DC               LDAA TOF
+1535   5AA0 97 81               STAA SQUARE
+1536   5AA2 7F 00 82            CLR MOVEN
+1537   5AA5 BD 51 46            JSR MOVE
+1538   5AA8 CE 7D 60            LDX #USTACK
+1539   5AAB DF 8E               STX UPTR
+1540   5AAD 96 ED               LDAA HLEN
+1541   5AAF 81 04               CMPA #4
+1542   5AB1 24 0E               BCC DM_H
+1543   5AB3 48                  ASLA                    ; remember the first plies for the book
+1544   5AB4 16                  TAB
+1545   5AB5 CE 80 90            LDX #HIST
+1546   5AB8 3A                  ABX
+1547   5AB9 96 DB               LDAA FROMF
+1548   5ABB A7 00               STAA 0,X
+1549   5ABD 96 DC               LDAA TOF
+1550   5ABF A7 01               STAA 1,X
+1551   5AC1 96 ED       DM_H:   LDAA HLEN
+1552   5AC3 81 FF               CMPA #$FF
+1553   5AC5 27 03               BEQ DM_H2
+1554   5AC7 7C 00 ED            INC HLEN
+1555   5ACA 96 DB       DM_H2:  LDAA FROMF
+1556   5ACC 97 BA               STAA LASTF
+1557   5ACE 96 DC               LDAA TOF
+1558   5AD0 97 BB               STAA LASTT
+1559   5AD2 7E 50 31            JMP REVERSE
+1560   5AD5             ; X -> 4 chars, text of FROMF/TOF
+1561   5AD5 96 DB       SETTXT: LDAA FROMF
+1562   5AD7 BD 5A E8            JSR SQCH
+1563   5ADA A7 00               STAA 0,X
+1564   5ADC E7 01               STAB 1,X
+1565   5ADE 96 DC               LDAA TOF
+1566   5AE0 BD 5A E8            JSR SQCH
+1567   5AE3 A7 02               STAA 2,X
+1568   5AE5 E7 03               STAB 3,X
+1569   5AE7 39                  RTS
+1570   5AE8 16          SQCH:   TAB                     ; A = square -> A file char, B rank char
+1571   5AE9 84 07               ANDA #7
+1572   5AEB 8B 41               ADDA #$41
+1573   5AED 54                  LSRB
+1574   5AEE 54                  LSRB
+1575   5AEF 54                  LSRB
+1576   5AF0 54                  LSRB
+1577   5AF1 CB 31               ADDB #$31
+1578   5AF3 39                  RTS
+1579   5AF4 86 55       INITTXT: LDAA #$55              ; "U:----"
+1580   5AF6 A7 00               STAA 0,X
+1581   5AF8 86 3A               LDAA #$3A
+1582   5AFA A7 01               STAA 1,X
+1583   5AFC 86 2D               LDAA #$2D
+1584   5AFE A7 02               STAA 2,X
+1585   5B00 A7 03               STAA 3,X
+1586   5B02 A7 04               STAA 4,X
+1587   5B04 A7 05               STAA 5,X
+1588   5B06 6F 06               CLR 6,X
+1589   5B08 39                  RTS
+1590   5B09             
+1591   5B09             ; ---------------------------------------------------------------------
+1592   5B09             ;  keyboard
+1593   5B09             ; ---------------------------------------------------------------------
+1594   5B09             ;  SCAN: A = ASCII of a pressed key (letters, digits, ENTER=13, BREAK=27,
+1595   5B09             ;        CTRL-A = 8) or 0.  Matrix: strobe a column low on port 1, read the
+1596   5B09             ;        six row bits at $BFFF (active low).  CTRL/BREAK read via port 2.
+1597   5B09 86 FE       SCAN:   LDAA #$FE               ; column 0 strobe: CTRL state
+1598   5B0B 97 02               STAA $02
+1599   5B0D 01                  NOP
+1600   5B0E 01                  NOP
+1601   5B0F D6 03               LDAB $03
+1602   5B11 C4 02               ANDB #2
+1603   5B13 D7 DD               STAB CTRLF              ; 0 = CTRL held
+1604   5B15 86 FB               LDAA #$FB               ; column 2 strobe: BREAK state
+1605   5B17 97 02               STAA $02
+1606   5B19 01                  NOP
+1607   5B1A 01                  NOP
+1608   5B1B D6 03               LDAB $03
+1609   5B1D C5 02               BITB #2
+1610   5B1F 26 03               BNE SC_NB
+1611   5B21 86 1B               LDAA #27
+1612   5B23 39                  RTS
+1613   5B24 86 FE       SC_NB:  LDAA #$FE
+1614   5B26 97 D5               STAA U2
+1615   5B28 7F 00 D6            CLR U3
+1616   5B2B 96 D5       SC_COL: LDAA U2
+1617   5B2D 97 02               STAA $02
+1618   5B2F 01                  NOP
+1619   5B30 01                  NOP
+1620   5B31 B6 BF FF            LDAA $BFFF
+1621   5B34 43                  COMA
+1622   5B35 84 3F               ANDA #$3F
+1623   5B37 26 11               BNE SC_HIT
+1624   5B39 96 D5       SC_NX:  LDAA U2
+1625   5B3B 0D                  SEC
+1626   5B3C 49                  ROLA
+1627   5B3D 97 D5               STAA U2
+1628   5B3F 7C 00 D6            INC U3
+1629   5B42 D6 D6               LDAB U3
+1630   5B44 C1 08               CMPB #8
+1631   5B46 26 E3               BNE SC_COL
+1632   5B48 4F                  CLRA
+1633   5B49 39                  RTS
+1634   5B4A 5F          SC_HIT: CLRB                    ; B = row of lowest set bit
+1635   5B4B 44          SC_R:   LSRA
+1636   5B4C 25 03               BCS SC_F
+1637   5B4E 5C                  INCB
+1638   5B4F 20 FA               BRA SC_R
+1639   5B51 D7 D4       SC_F:   STAB U1                 ; row
+1640   5B53 96 D4               LDAA U1
+1641   5B55 48                  ASLA
+1642   5B56 48                  ASLA
+1643   5B57 48                  ASLA
+1644   5B58 9B D6               ADDA U3                 ; row*8+col
+1645   5B5A CE 60 43            LDX #KEYTAB
+1646   5B5D 16                  TAB
+1647   5B5E 3A                  ABX
+1648   5B5F A6 00               LDAA 0,X
+1649   5B61 27 D6               BEQ SC_NX
+1650   5B63 7D 00 DD            TST CTRLF
+1651   5B66 26 06               BNE SC_R2
+1652   5B68 81 41               CMPA #$41               ; CTRL-A = backspace
+1653   5B6A 26 02               BNE SC_R2
+1654   5B6C 86 08               LDAA #8
+1655   5B6E 39          SC_R2:  RTS
+1656   5B6F 7F 00 E0    GETKEY: CLR GKC
+1657   5B72 BD 5B 09    GK_L:   JSR SCAN
+1658   5B75 4D                  TSTA
+1659   5B76 26 12               BNE GK_D
+1660   5B78 D6 E0               LDAB GKC                ; key up: after 8 empty scans forget last key
+1661   5B7A C1 08               CMPB #8
+1662   5B7C 24 F4               BCC GK_L
+1663   5B7E 5C                  INCB
+1664   5B7F D7 E0               STAB GKC
+1665   5B81 C1 08               CMPB #8
+1666   5B83 26 ED               BNE GK_L
+1667   5B85 7F 00 E1            CLR LASTK
+1668   5B88 20 E8               BRA GK_L
+1669   5B8A 7F 00 E0    GK_D:   CLR GKC
+1670   5B8D 91 E1               CMPA LASTK              ; still holding the previous key?
+1671   5B8F 27 E1               BEQ GK_L
+1672   5B91 97 D2               STAA KEYC
+1673   5B93 BD 5B 09            JSR SCAN                ; confirm
+1674   5B96 91 D2               CMPA KEYC
+1675   5B98 26 D8               BNE GK_L
+1676   5B9A 97 E1               STAA LASTK
+1677   5B9C 39                  RTS
+1678   5B9D             GETKEY_E:
+1679   5B9D             
+1680   5B9D             ; ---------------------------------------------------------------------
+1681   5B9D             ;  drawing
+1682   5B9D             ; ---------------------------------------------------------------------
+1683   5B9D CE 40 00    CLS:    LDX #$4000
+1684   5BA0 96 C6               LDAA BGB
+1685   5BA2 A7 00       CL_L:   STAA 0,X
+1686   5BA4 08                  INX
+1687   5BA5 8C 4C 00            CPX #$4C00
+1688   5BA8 26 F8               BNE CL_L
+1689   5BAA 39                  RTS
+1690   5BAB             
+1691   5BAB             ; PUTC: A = ASCII ($20-$5F), draws 3x5 glyph at (TCOL,TROW) in FGB on BGB
+1692   5BAB 80 20       PUTC:   SUBA #$20
+1693   5BAD 81 40               CMPA #64
+1694   5BAF 25 01               BCS PC_OK
+1695   5BB1 4F                  CLRA
+1696   5BB2 C6 05       PC_OK:  LDAB #5
+1697   5BB4 3D                  MUL
+1698   5BB5 C3 66 2F            ADDD #FONT
+1699   5BB8 DD C7               STD TPTR
+1700   5BBA 96 C4               LDAA TROW
+1701   5BBC C6 20               LDAB #32
+1702   5BBE 3D                  MUL
+1703   5BBF C3 40 00            ADDD #$4000
+1704   5BC2 DB C3               ADDB TCOL
+1705   5BC4 DD CA               STD DSCR
+1706   5BC6 86 05               LDAA #5
+1707   5BC8 97 D4               STAA U1
+1708   5BCA DE C7       PC_L:   LDX TPTR
+1709   5BCC A6 00               LDAA 0,X
+1710   5BCE 08                  INX
+1711   5BCF DF C7               STX TPTR
+1712   5BD1 16                  TAB
+1713   5BD2 94 C5               ANDA FGB
+1714   5BD4 53                  COMB
+1715   5BD5 D4 C6               ANDB BGB
+1716   5BD7 1B                  ABA
+1717   5BD8 DE CA               LDX DSCR
+1718   5BDA A7 00               STAA 0,X
+1719   5BDC C6 20               LDAB #32
+1720   5BDE 3A                  ABX
+1721   5BDF DF CA               STX DSCR
+1722   5BE1 7A 00 D4            DEC U1
+1723   5BE4 26 E4               BNE PC_L
+1724   5BE6 96 C6               LDAA BGB
+1725   5BE8 DE CA               LDX DSCR
+1726   5BEA A7 00               STAA 0,X
+1727   5BEC 7C 00 C3            INC TCOL
+1728   5BEF 39                  RTS
+1729   5BF0             ; PUTS: X -> zero-terminated string
+1730   5BF0 A6 00       PUTS:   LDAA 0,X
+1731   5BF2 27 08               BEQ PS_R
+1732   5BF4 3C                  PSHX
+1733   5BF5 BD 5B AB            JSR PUTC
+1734   5BF8 38                  PULX
+1735   5BF9 08                  INX
+1736   5BFA 20 F4               BRA PUTS
+1737   5BFC 39          PS_R:   RTS
+1738   5BFD             ; PUT6: X -> exactly six characters
+1739   5BFD C6 06       PUT6:   LDAB #6
+1740   5BFF D7 D6               STAB U3
+1741   5C01 A6 00       P6_L:   LDAA 0,X
+1742   5C03 3C                  PSHX
+1743   5C04 BD 5B AB            JSR PUTC
+1744   5C07 38                  PULX
+1745   5C08 08                  INX
+1746   5C09 7A 00 D6            DEC U3
+1747   5C0C 26 F3               BNE P6_L
+1748   5C0E 39                  RTS
+1749   5C0F             ; PRTAT: A=col B=row X=string(zero-terminated)
+1750   5C0F 97 C3       PRTAT:  STAA TCOL
+1751   5C11 D7 C4               STAB TROW
+1752   5C13 20 DB               BRA PUTS
+1753   5C15             
+1754   5C15             ; BLIT a 12x11 tile: DSCR, SPRP, TMB, SQB0/SQB1 set up by caller
+1755   5C15 86 0B       BLIT:   LDAA #11
+1756   5C17 97 D1               STAA DROWS
+1757   5C19 DE CF       BL_ROW: LDX SPRP
+1758   5C1B A6 00               LDAA 0,X
+1759   5C1D 16                  TAB
+1760   5C1E 94 CE               ANDA TMB
+1761   5C20 53                  COMB
+1762   5C21 D4 CC               ANDB SQB0
+1763   5C23 1B                  ABA
+1764   5C24 97 D7               STAA R0
+1765   5C26 A6 01               LDAA 1,X
+1766   5C28 16                  TAB
+1767   5C29 94 CE               ANDA TMB
+1768   5C2B 53                  COMB
+1769   5C2C D4 CC               ANDB SQB0
+1770   5C2E 1B                  ABA
+1771   5C2F 97 D8               STAA R1
+1772   5C31 A6 02               LDAA 2,X
+1773   5C33 16                  TAB
+1774   5C34 94 CE               ANDA TMB
+1775   5C36 53                  COMB
+1776   5C37 D4 CC               ANDB SQB0
+1777   5C39 1B                  ABA
+1778   5C3A 97 D9               STAA R2
+1779   5C3C DE CA               LDX DSCR
+1780   5C3E 96 D7               LDAA R0
+1781   5C40 A7 00               STAA 0,X
+1782   5C42 96 D8               LDAA R1
+1783   5C44 A7 01               STAA 1,X
+1784   5C46 96 D9               LDAA R2
+1785   5C48 A7 02               STAA 2,X
+1786   5C4A C6 20               LDAB #32
+1787   5C4C 3A                  ABX
+1788   5C4D DF CA               STX DSCR
+1789   5C4F DC CF               LDD SPRP
+1790   5C51 C3 00 03            ADDD #3
+1791   5C54 DD CF               STD SPRP
+1792   5C56 96 CC               LDAA SQB0
+1793   5C58 D6 CD               LDAB SQB1
+1794   5C5A D7 CC               STAB SQB0
+1795   5C5C 97 CD               STAA SQB1
+1796   5C5E 7A 00 D1            DEC DROWS
+1797   5C61 26 B6               BNE BL_ROW
+1798   5C63 39                  RTS
+1799   5C64             
+1800   5C64             ; DRAWSQ: draw square DQ (0x88) according to the position in MAIL
+1801   5C64 96 C9       DRAWSQ: LDAA DQ
+1802   5C66 84 07               ANDA #7
+1803   5C68 97 D4               STAA U1                 ; file
+1804   5C6A 96 C9               LDAA DQ
+1805   5C6C 44                  LSRA
+1806   5C6D 44                  LSRA
+1807   5C6E 44                  LSRA
+1808   5C6F 44                  LSRA
+1809   5C70 97 D5               STAA U2                 ; rank
+1810   5C72 9B D4               ADDA U1
+1811   5C74 84 01               ANDA #1
+1812   5C76 97 D6               STAA U3                 ; 1 = light square
+1813   5C78 7D 00 B9            TST FLIP
+1814   5C7B 26 08               BNE DS_FL
+1815   5C7D 86 07               LDAA #7
+1816   5C7F 90 D5               SUBA U2
+1817   5C81 97 D5               STAA U2
+1818   5C83 20 06               BRA DS_P
+1819   5C85 86 07       DS_FL:  LDAA #7
+1820   5C87 90 D4               SUBA U1
+1821   5C89 97 D4               STAA U1
+1822   5C8B 96 D4       DS_P:   LDAA U1
+1823   5C8D 48                  ASLA
+1824   5C8E 9B D4               ADDA U1
+1825   5C90 8B 02               ADDA #2
+1826   5C92 97 D4               STAA U1                 ; byte column
+1827   5C94 96 D5               LDAA U2
+1828   5C96 C6 0B               LDAB #11
+1829   5C98 3D                  MUL
+1830   5C99 05                  ASLD
+1831   5C9A 05                  ASLD
+1832   5C9B 05                  ASLD
+1833   5C9C 05                  ASLD
+1834   5C9D 05                  ASLD
+1835   5C9E C3 40 00            ADDD #$4000
+1836   5CA1 DB D4               ADDB U1
+1837   5CA3 DD CA               STD DSCR
+1838   5CA5 86 00               LDAA #C_GRN
+1839   5CA7 7D 00 D6            TST U3
+1840   5CAA 27 02               BEQ DS_C
+1841   5CAC 86 55               LDAA #C_YEL
+1842   5CAE 97 CC       DS_C:   STAA SQB0
+1843   5CB0 97 CD               STAA SQB1
+1844   5CB2 96 C9               LDAA DQ
+1845   5CB4 91 BA               CMPA LASTF
+1846   5CB6 27 08               BEQ DS_HL
+1847   5CB8 91 BB               CMPA LASTT
+1848   5CBA 27 04               BEQ DS_HL
+1849   5CBC 91 C1               CMPA HLF
+1850   5CBE 26 08               BNE DS_NH
+1851   5CC0 86 44       DS_HL:  LDAA #$44
+1852   5CC2 97 CC               STAA SQB0
+1853   5CC4 86 11               LDAA #$11
+1854   5CC6 97 CD               STAA SQB1
+1855   5CC8 D6 C9       DS_NH:  LDAB DQ
+1856   5CCA CE 7C C0            LDX #MAIL
+1857   5CCD 3A                  ABX
+1858   5CCE A6 00               LDAA 0,X
+1859   5CD0 26 0B               BNE DS_PC
+1860   5CD2 CE 60 73            LDX #ZEROS
+1861   5CD5 DF CF               STX SPRP
+1862   5CD7 7F 00 CE            CLR TMB
+1863   5CDA 7E 5C 15            JMP BLIT
+1864   5CDD 84 2F       DS_PC:  ANDA #$2F
+1865   5CDF 36                  PSHA
+1866   5CE0 16                  TAB
+1867   5CE1 CE 7C 30            LDX #PTYPE
+1868   5CE4 3A                  ABX
+1869   5CE5 E6 00               LDAB 0,X
+1870   5CE7 CE 60 32            LDX #GMAP
+1871   5CEA 3A                  ABX
+1872   5CEB A6 00               LDAA 0,X
+1873   5CED C6 21               LDAB #33
+1874   5CEF 3D                  MUL
+1875   5CF0 C3 65 69            ADDD #SPRITES
+1876   5CF3 DD CF               STD SPRP
+1877   5CF5 32                  PULA
+1878   5CF6 84 20               ANDA #$20
+1879   5CF8 26 04               BNE DS_BK
+1880   5CFA 86 FF               LDAA #C_RED
+1881   5CFC 20 02               BRA DS_W
+1882   5CFE 86 AA       DS_BK:  LDAA #C_BLU
+1883   5D00 97 CE       DS_W:   STAA TMB
+1884   5D02 7E 5C 15            JMP BLIT
+1885   5D05             
+1886   5D05             DRAWBOARD:
+1887   5D05 7F 00 C9            CLR DQ
+1888   5D08 BD 5C 64    DB_L:   JSR DRAWSQ
+1889   5D0B 7C 00 C9            INC DQ
+1890   5D0E 96 C9               LDAA DQ
+1891   5D10 85 08               BITA #8
+1892   5D12 27 F4               BEQ DB_L
+1893   5D14 8B 08               ADDA #8
+1894   5D16 97 C9               STAA DQ
+1895   5D18 81 80               CMPA #$80
+1896   5D1A 26 EC               BNE DB_L
+1897   5D1C 39                  RTS
+1898   5D1D             
+1899   5D1D             ; labels around the board and static text of the side panel
+1900   5D1D             DRAWSTATIC:
+1901   5D1D 86 55               LDAA #C_YEL
+1902   5D1F 97 C5               STAA FGB
+1903   5D21 7F 00 DE            CLR LBLI
+1904   5D24 96 DE       DL_R:   LDAA LBLI               ; rank digits, one per screen row
+1905   5D26 7D 00 B9            TST FLIP
+1906   5D29 26 08               BNE DL_R1
+1907   5D2B 86 07               LDAA #7
+1908   5D2D 90 DE               SUBA LBLI               ; A = 7 - row
+1909   5D2F 8B 31               ADDA #$31
+1910   5D31 20 02               BRA DL_R2
+1911   5D33 8B 31       DL_R1:  ADDA #$31
+1912   5D35 36          DL_R2:  PSHA
+1913   5D36 96 DE               LDAA LBLI
+1914   5D38 C6 0B               LDAB #11
+1915   5D3A 3D                  MUL
+1916   5D3B CB 03               ADDB #3
+1917   5D3D D7 C4               STAB TROW
+1918   5D3F 7F 00 C3            CLR TCOL
+1919   5D42 32                  PULA
+1920   5D43 BD 5B AB            JSR PUTC
+1921   5D46 7C 00 DE            INC LBLI
+1922   5D49 96 DE               LDAA LBLI
+1923   5D4B 81 08               CMPA #8
+1924   5D4D 26 D5               BNE DL_R
+1925   5D4F 7F 00 DE            CLR LBLI
+1926   5D52 96 DE       DL_F:   LDAA LBLI               ; file letters under the board
+1927   5D54 7D 00 B9            TST FLIP
+1928   5D57 26 04               BNE DL_F1
+1929   5D59 8B 41               ADDA #$41
+1930   5D5B 20 04               BRA DL_F2
+1931   5D5D 86 48       DL_F1:  LDAA #$48
+1932   5D5F 90 DE               SUBA LBLI
+1933   5D61 36          DL_F2:  PSHA
+1934   5D62 96 DE               LDAA LBLI
+1935   5D64 48                  ASLA
+1936   5D65 9B DE               ADDA LBLI
+1937   5D67 8B 03               ADDA #3
+1938   5D69 97 C3               STAA TCOL
+1939   5D6B 86 59               LDAA #89
+1940   5D6D 97 C4               STAA TROW
+1941   5D6F 32                  PULA
+1942   5D70 BD 5B AB            JSR PUTC
+1943   5D73 7C 00 DE            INC LBLI
+1944   5D76 96 DE               LDAA LBLI
+1945   5D78 81 08               CMPA #8
+1946   5D7A 26 D6               BNE DL_F
+1947   5D7C 86 1A               LDAA #26
+1948   5D7E C6 00               LDAB #0
+1949   5D80 CE 5F 13            LDX #T_MICRO
+1950   5D83 BD 5C 0F            JSR PRTAT
+1951   5D86 86 1A               LDAA #26
+1952   5D88 C6 06               LDAB #6
+1953   5D8A CE 5F 19            LDX #T_CHESS
+1954   5D8D BD 5C 0F            JSR PRTAT
+1955   5D90 86 1A               LDAA #26
+1956   5D92 C6 0C               LDAB #12
+1957   5D94 CE 5F 1F            LDX #T_16K
+1958   5D97 BD 5C 0F            JSR PRTAT
+1959   5D9A CE 5F 23            LDX #T_YOUW
+1960   5D9D 96 B8               LDAA HUMAN
+1961   5D9F 27 0A               BEQ DSP0
+1962   5DA1 CE 5F 29            LDX #T_YOUB
+1963   5DA4 81 FF               CMPA #$FF
+1964   5DA6 26 03               BNE DSP0
+1965   5DA8 CE 5F 2F            LDX #T_SELF
+1966   5DAB 86 1A       DSP0:   LDAA #26
+1967   5DAD C6 12               LDAB #18
+1968   5DAF BD 5C 0F            JSR PRTAT
+1969   5DB2 CE 5F 3F            LDX #T_NEW
+1970   5DB5 96 B8               LDAA HUMAN
+1971   5DB7 81 FF               CMPA #$FF
+1972   5DB9 26 03               BNE DSP2
+1973   5DBB CE 5F 34            LDX #T_HOLD
+1974   5DBE 86 1A       DSP2:   LDAA #26
+1975   5DC0 C6 4E               LDAB #78
+1976   5DC2 BD 5C 0F            JSR PRTAT
+1977   5DC5 CE 5F 45            LDX #T_QUIT
+1978   5DC8 96 B8               LDAA HUMAN
+1979   5DCA 81 FF               CMPA #$FF
+1980   5DCC 26 03               BNE DSP3
+1981   5DCE CE 5F 39            LDX #T_BRK
+1982   5DD1 86 1A       DSP3:   LDAA #26
+1983   5DD3 C6 54               LDAB #84
+1984   5DD5 BD 5C 0F            JSR PRTAT
+1985   5DD8 39                  RTS
+1986   5DD9             
+1987   5DD9             DRAWMOVES:
+1988   5DD9 86 55               LDAA #C_YEL
+1989   5DDB 97 C5               STAA FGB
+1990   5DDD 86 1A               LDAA #26
+1991   5DDF C6 1E               LDAB #30
+1992   5DE1 CE 80 70            LDX #HTXT
+1993   5DE4 BD 5C 0F            JSR PRTAT
+1994   5DE7 86 1A               LDAA #26
+1995   5DE9 C6 24               LDAB #36
+1996   5DEB CE 80 78            LDX #CTXT
+1997   5DEE 7E 5C 0F            JMP PRTAT
+1998   5DF1             
+1999   5DF1             ; typed-move echo
+2000   5DF1             DRAWINPUT:
+2001   5DF1 86 55               LDAA #C_YEL
+2002   5DF3 97 C5               STAA FGB
+2003   5DF5 5F                  CLRB
+2004   5DF6 D1 BC       DI_L:   CMPB INLEN
+2005   5DF8 25 0E               BCS DI_CH
+2006   5DFA 26 08               BNE DI_BL
+2007   5DFC C1 04               CMPB #4
+2008   5DFE 24 04               BCC DI_BL
+2009   5E00 86 5F               LDAA #$5F
+2010   5E02 20 0A               BRA DI_ST
+2011   5E04 86 20       DI_BL:  LDAA #$20
+2012   5E06 20 06               BRA DI_ST
+2013   5E08 CE 00 BD    DI_CH:  LDX #INBUF
+2014   5E0B 3A                  ABX
+2015   5E0C A6 00               LDAA 0,X
+2016   5E0E CE 80 80    DI_ST:  LDX #INTXT
+2017   5E11 3A                  ABX
+2018   5E12 A7 00               STAA 0,X
+2019   5E14 5C                  INCB
+2020   5E15 C1 06               CMPB #6
+2021   5E17 26 DD               BNE DI_L
+2022   5E19 6F 01               CLR 1,X
+2023   5E1B 86 1A               LDAA #26
+2024   5E1D C6 42               LDAB #66
+2025   5E1F CE 80 80            LDX #INTXT
+2026   5E22 7E 5C 0F            JMP PRTAT
+2027   5E25             
+2028   5E25             ; status message: three 6-char lines from MSGTAB
+2029   5E25 96 DA       STATUS: LDAA MSGID
+2030   5E27 C6 12               LDAB #18
+2031   5E29 3D                  MUL
+2032   5E2A C3 5F A2            ADDD #MSGTAB
+2033   5E2D DD C7               STD TPTR
+2034   5E2F 86 FF               LDAA #C_RED
+2035   5E31 97 C5               STAA FGB
+2036   5E33 86 1A               LDAA #26
+2037   5E35 97 C3               STAA TCOL
+2038   5E37 86 30               LDAA #48
+2039   5E39 97 C4               STAA TROW
+2040   5E3B DE C7               LDX TPTR
+2041   5E3D BD 5B FD            JSR PUT6
+2042   5E40 86 1A               LDAA #26
+2043   5E42 97 C3               STAA TCOL
+2044   5E44 86 36               LDAA #54
+2045   5E46 97 C4               STAA TROW
+2046   5E48 BD 5B FD            JSR PUT6
+2047   5E4B 86 1A               LDAA #26
+2048   5E4D 97 C3               STAA TCOL
+2049   5E4F 86 3C               LDAA #60
+2050   5E51 97 C4               STAA TROW
+2051   5E53 BD 5B FD            JSR PUT6
+2052   5E56 39                  RTS
+2053   5E57             
+2054   5E57             ; ---------------------------------------------------------------------
+2055   5E57             ;  title screen / colour choice
+2056   5E57             ; ---------------------------------------------------------------------
+2057   5E57             TITLESCR:
+2058   5E57 7F 00 EF            CLR SELFF
+2059   5E5A 7F 00 C6            CLR BGB
+2060   5E5D BD 5B 9D            JSR CLS
+2061   5E60 7F 00 DE            CLR LBLI
+2062   5E63 86 05       TS_B:   LDAA #5
+2063   5E65 90 DE               SUBA LBLI
+2064   5E67 C6 21               LDAB #33
+2065   5E69 3D                  MUL
+2066   5E6A C3 65 69            ADDD #SPRITES
+2067   5E6D DD CF               STD SPRP
+2068   5E6F 96 DE               LDAA LBLI
+2069   5E71 84 01               ANDA #1
+2070   5E73 26 08               BNE TS_ODD
+2071   5E75 86 FF               LDAA #C_RED
+2072   5E77 97 CE               STAA TMB
+2073   5E79 86 55               LDAA #C_YEL
+2074   5E7B 20 06               BRA TS_P
+2075   5E7D 86 AA       TS_ODD: LDAA #C_BLU
+2076   5E7F 97 CE               STAA TMB
+2077   5E81 86 00               LDAA #C_GRN
+2078   5E83 97 CC       TS_P:   STAA SQB0
+2079   5E85 97 CD               STAA SQB1
+2080   5E87 96 DE               LDAA LBLI
+2081   5E89 48                  ASLA
+2082   5E8A 9B DE               ADDA LBLI
+2083   5E8C 8B 07               ADDA #7
+2084   5E8E 97 D4               STAA U1
+2085   5E90 CC 41 00            LDD #$4100
+2086   5E93 DB D4               ADDB U1
+2087   5E95 DD CA               STD DSCR
+2088   5E97 BD 5C 15            JSR BLIT
+2089   5E9A 7C 00 DE            INC LBLI
+2090   5E9D 96 DE               LDAA LBLI
+2091   5E9F 81 06               CMPA #6
+2092   5EA1 26 C0               BNE TS_B
+2093   5EA3 86 FF               LDAA #C_RED
+2094   5EA5 97 C5               STAA FGB
+2095   5EA7 86 0B               LDAA #11
+2096   5EA9 C6 1A               LDAB #26
+2097   5EAB CE 5F 4C            LDX #T_TITLE
+2098   5EAE BD 5C 0F            JSR PRTAT
+2099   5EB1 86 55               LDAA #C_YEL
+2100   5EB3 97 C5               STAA FGB
+2101   5EB5 86 08               LDAA #8
+2102   5EB7 C6 22               LDAB #34
+2103   5EB9 CE 5F 57            LDX #T_SUB1
+2104   5EBC BD 5C 0F            JSR PRTAT
+2105   5EBF 86 04               LDAA #4
+2106   5EC1 C6 2A               LDAB #42
+2107   5EC3 CE 5F 67            LDX #T_SUB2
+2108   5EC6 BD 5C 0F            JSR PRTAT
+2109   5EC9 86 0C               LDAA #12
+2110   5ECB C6 3C               LDAB #60
+2111   5ECD CE 5F 7F            LDX #T_PLAY
+2112   5ED0 BD 5C 0F            JSR PRTAT
+2113   5ED3 86 FF               LDAA #C_RED
+2114   5ED5 97 C5               STAA FGB
+2115   5ED7 86 08               LDAA #8
+2116   5ED9 C6 44               LDAB #68
+2117   5EDB CE 5F 88            LDX #T_CHOOSE
+2118   5EDE BD 5C 0F            JSR PRTAT
+2119   5EE1 86 55               LDAA #C_YEL
+2120   5EE3 97 C5               STAA FGB
+2121   5EE5 86 0C               LDAA #12
+2122   5EE7 C6 54               LDAB #84
+2123   5EE9 CE 5F 99            LDX #T_QUIT2
+2124   5EEC BD 5C 0F            JSR PRTAT
+2125   5EEF BD 5B 6F    TS_K:   JSR GETKEY
+2126   5EF2 81 57               CMPA #$57               ; W
+2127   5EF4 27 14               BEQ TS_W
+2128   5EF6 81 42               CMPA #$42               ; B
+2129   5EF8 27 14               BEQ TS_BL
+2130   5EFA 81 53               CMPA #$53               ; S: hidden self-play mode
+2131   5EFC 27 07               BEQ TS_S
+2132   5EFE 81 51               CMPA #$51               ; Q
+2133   5F00 26 ED               BNE TS_K
+2134   5F02 7E 5A 55            JMP QUIT
+2135   5F05 86 01       TS_S:   LDAA #1
+2136   5F07 97 EF               STAA SELFF
+2137   5F09 39                  RTS
+2138   5F0A 7F 00 B8    TS_W:   CLR HUMAN
+2139   5F0D 39                  RTS
+2140   5F0E 86 20       TS_BL:  LDAA #$20
+2141   5F10 97 B8               STAA HUMAN
+2142   5F12 39                  RTS
+2143   5F13             
+2144   5F13             ; ---------------------------------------------------------------------
+2145   5F13             ;  data
+2146   5F13             ; ---------------------------------------------------------------------
+2147   5F13 4D4943524F00T_MICRO: .strz "MICRO"
+2148   5F19 434845535300T_CHESS: .strz "CHESS"
+2149   5F1F 31 36 4B 00 T_16K:  .strz "16K"
+2150   5F23 594F553D5700T_YOUW: .strz "YOU=W"
+2151   5F29 594F553D4200T_YOUB: .strz "YOU=B"
+2152   5F2F 53454C4600  T_SELF: .strz "SELF"
+2153   5F34 484F4C4400  T_HOLD: .strz "HOLD"
+2154   5F39 425245414B00T_BRK:  .strz "BREAK"
+2155   5F3F 4E3D4E455700T_NEW:  .strz "N=NEW"
+2156   5F45 513D5155495400T_QUIT: .strz "Q=QUIT"
+2157   5F4C 4D4943524F434845T_TITLE: .strz "MICROCHESS"
+2157   5F54 535300      
+2158   5F57 54414E4459204D43T_SUB1: .strz "TANDY MC-10 16K"
+2158   5F5F 2D31302031364B00
+2159   5F67 4241534544204F4ET_SUB2: .strz "BASED ON PETER JENNINGS"
+2159   5F6F 205045544552204A
+2159   5F77 454E4E494E475300
+2160   5F7F 504C41592041533AT_PLAY: .strz "PLAY AS:"
+2160   5F87 00          
+2161   5F88 573D574849544520T_CHOOSE: .strz "W=WHITE  B=BLACK"
+2161   5F90 20423D424C41434B
+2161   5F98 00          
+2162   5F99 51203D2051554954T_QUIT2: .strz "Q = QUIT"
+2162   5FA1 00          
+2163   5FA2 594F555220204D4FMSGTAB: .text "YOUR  MOVE        "
+2163   5FAA 5645202020202020
+2163   5FB2 2020        
+2164   5FB4 5448494E4B20494E        .text "THINK ING...      "
+2164   5FBC 472E2E2E20202020
+2164   5FC4 2020        
+2165   5FC6 434845434B21594F        .text "CHECK!YOUR  MOVE  "
+2165   5FCE 555220204D4F5645
+2165   5FD6 2020        
+2166   5FD8 4241442020204D4F        .text "BAD   MOVE!       "
+2166   5FE0 5645212020202020
+2166   5FE8 2020        
+2167   5FEA 4D4154452120594F        .text "MATE! YOU   WIN!  "
+2167   5FF2 5520202057494E21
+2167   5FFA 2020        
+2168   5FFC 4D41544521204350        .text "MATE! CPU   WINS  "
+2168   6004 5520202057494E53
+2168   600C 2020        
+2169   600E 5354414C452D4D41        .text "STALE-MATE! DRAW  "
+2169   6016 5445212044524157
+2169   601E 2020        
+2170   6020 434845434B215448        .text "CHECK!THINK       "
+2170   6028 494E4B2020202020
+2170   6030 2020        
+2171   6032 0003020401000000GMAP:   .BYTE 0,3,2,4,1,0,0,0,5,0,0,0,0,0,0,0,0
+2171   603A 0500000000000000
+2171   6042 00          
+2172   6043 0041424344454647KEYTAB: .BYTE $00,$41,$42,$43,$44,$45,$46,$47
+2173   604B 48494A4B4C4D4E4F        .BYTE $48,$49,$4A,$4B,$4C,$4D,$4E,$4F
+2174   6053 5051525354555657        .BYTE $50,$51,$52,$53,$54,$55,$56,$57
+2175   605B 58595A0000000D20        .BYTE $58,$59,$5A,$00,$00,$00,$0D,$20
+2176   6063 3031323334353637        .BYTE $30,$31,$32,$33,$34,$35,$36,$37
+2177   606B 38393A3B2C2D2E2F        .BYTE $38,$39,$3A,$3B,$2C,$2D,$2E,$2F
+2178   6073 0000000000000000ZEROS:  .fill 33
+2178   607B 0000000000000000
+2178   6083 0000000000000000
+2178   608B 0000000000000000
+2178   6093 00          
+2179   6094 4D4943524F434845        .strz "MICROCHESS (C) 1996-2002 PETER JENNINGS PETERJ@BENLO.COM"
+2179   609C 5353202843292031
+2179   60A4 3939362D32303032
+2179   60AC 205045544552204A
+2179   60B4 454E4E494E475320
+2179   60BC 50455445524A4042
+2179   60C4 454E4C4F2E434F4D
+2179   60CC 00          
+2180   60CD 4D432D3130203136        .strz "MC-10 16K NATIVE 6803 PORT: CASTLING, EN PASSANT, 128X96 GRAPHICS"
+2180   60D5 4B204E4154495645
+2180   60DD 203638303320504F
+2180   60E5 52543A2043415354
+2180   60ED 4C494E472C20454E
+2180   60F5 2050415353414E54
+2180   60FD 2C20313238583936
+2180   6105 2047524150484943
+2180   610D 5300        
+2181   610F             
+2182   610F             ; ---------------------------------------------------------------------
+2183   610F             ;  opening book: entries  n, n*(from,to) history prefix, reply from,to
+2184   610F             ;  Matching entries are collected, one is chosen at random, and it is
+2185   610F             ;  only played if it is in the legal list.
+2186   610F             ; ---------------------------------------------------------------------
+2187   610F 96 0A       RND:    LDAA $0A                ; free-running counter low byte
+2188   6111 98 EE               EORA RNDS
+2189   6113 49                  ROLA
+2190   6114 97 EE               STAA RNDS
+2191   6116 39                  RTS
+2192   6117 96 ED       BOOKMV: LDAA HLEN
+2193   6119 81 04               CMPA #4
+2194   611B 24 52               BCC BK_NO
+2195   611D 7F 00 E9            CLR BKC
+2196   6120 CE 63 27            LDX #BOOK
+2197   6123 DF E3               STX BKP
+2198   6125 BD 61 7C    BK_C:   JSR BKMATCH
+2199   6128 81 FF               CMPA #$FF
+2200   612A 27 08               BEQ BK_CD
+2201   612C 4D                  TSTA
+2202   612D 27 F6               BEQ BK_C
+2203   612F 7C 00 E9            INC BKC
+2204   6132 20 F1               BRA BK_C
+2205   6134 96 E9       BK_CD:  LDAA BKC
+2206   6136 27 37               BEQ BK_NO
+2207   6138 BD 61 0F            JSR RND
+2208   613B 91 E9       BK_MOD: CMPA BKC
+2209   613D 25 04               BCS BK_PK
+2210   613F 90 E9               SUBA BKC
+2211   6141 20 F8               BRA BK_MOD
+2212   6143 97 EA       BK_PK:  STAA BKR
+2213   6145 CE 63 27            LDX #BOOK
+2214   6148 DF E3               STX BKP
+2215   614A BD 61 7C    BK_F:   JSR BKMATCH
+2216   614D 4D                  TSTA
+2217   614E 27 FA               BEQ BK_F
+2218   6150 96 EA               LDAA BKR
+2219   6152 27 05               BEQ BK_GOT
+2220   6154 7A 00 EA            DEC BKR
+2221   6157 20 F1               BRA BK_F
+2222   6159 CE 7E 60    BK_GOT: LDX #MLIST              ; is the book move legal here?
+2223   615C D6 D3               LDAB MCNT
+2224   615E A6 00       BK_L:   LDAA 0,X
+2225   6160 91 EB               CMPA BKF
+2226   6162 26 06               BNE BK_NX
+2227   6164 A6 01               LDAA 1,X
+2228   6166 91 EC               CMPA BKT
+2229   6168 27 07               BEQ BK_OK
+2230   616A 08          BK_NX:  INX
+2231   616B 08                  INX
+2232   616C 5A                  DECB
+2233   616D 26 EF               BNE BK_L
+2234   616F 4F          BK_NO:  CLRA
+2235   6170 39                  RTS
+2236   6171 96 EB       BK_OK:  LDAA BKF
+2237   6173 97 DB               STAA FROMF
+2238   6175 96 EC               LDAA BKT
+2239   6177 97 DC               STAA TOF
+2240   6179 86 01               LDAA #1
+2241   617B 39                  RTS
+2242   617C             ; BKMATCH: examine entry at BKP, advance BKP. A = 1 match (reply in BKF/BKT),
+2243   617C             ;          0 no match, $FF end of table
+2244   617C DE E3       BKMATCH: LDX BKP
+2245   617E A6 00               LDAA 0,X
+2246   6180 81 FF               CMPA #$FF
+2247   6182 26 01               BNE BKM_E
+2248   6184 39                  RTS
+2249   6185 97 E6       BKM_E:   STAA BKN
+2250   6187 48                  ASLA
+2251   6188 97 E7               STAA BKN2
+2252   618A 8B 03               ADDA #3
+2253   618C 97 E8               STAA BKL
+2254   618E 96 E6               LDAA BKN
+2255   6190 91 ED               CMPA HLEN
+2256   6192 26 36               BNE BKM_NO
+2257   6194 7F 00 E5            CLR BKI
+2258   6197 96 E5       BKM_L:   LDAA BKI
+2259   6199 91 E7               CMPA BKN2
+2260   619B 27 1B               BEQ BKM_YES
+2261   619D DE E3               LDX BKP
+2262   619F 08                  INX
+2263   61A0 D6 E5               LDAB BKI
+2264   61A2 3A                  ABX
+2265   61A3 A6 00               LDAA 0,X
+2266   61A5 97 D4               STAA U1
+2267   61A7 CE 80 90            LDX #HIST
+2268   61AA D6 E5               LDAB BKI
+2269   61AC 3A                  ABX
+2270   61AD A6 00               LDAA 0,X
+2271   61AF 91 D4               CMPA U1
+2272   61B1 26 17               BNE BKM_NO
+2273   61B3 7C 00 E5            INC BKI
+2274   61B6 20 DF               BRA BKM_L
+2275   61B8 DE E3       BKM_YES: LDX BKP
+2276   61BA D6 E7               LDAB BKN2
+2277   61BC 5C                  INCB
+2278   61BD 3A                  ABX
+2279   61BE A6 00               LDAA 0,X
+2280   61C0 97 EB               STAA BKF
+2281   61C2 A6 01               LDAA 1,X
+2282   61C4 97 EC               STAA BKT
+2283   61C6 86 01               LDAA #1
+2284   61C8 20 01               BRA BKM_ADV
+2285   61CA 4F          BKM_NO:  CLRA
+2286   61CB 36          BKM_ADV: PSHA
+2287   61CC D6 E8               LDAB BKL
+2288   61CE DE E3               LDX BKP
+2289   61D0 3A                  ABX
+2290   61D1 DF E3               STX BKP
+2291   61D3 32                  PULA
+2292   61D4 39                  RTS
+2293   61D5             
+2294   61D5             ; ---------------------------------------------------------------------
+2295   61D5             ;  hidden self-play: both sides played by the engine, endless games,
+2296   61D5             ;  W/B/D tally.  Choose it with S on the title screen; hold BREAK or Q
+2297   61D5             ;  to stop.  Games longer than SPMAX plies count as draws.
+2298   61D5             ; ---------------------------------------------------------------------
+2299   61D5 7F 00 EF    SELFPLAY: CLR SELFF
+2300   61D8 7F 00 F0            CLR SW
+2301   61DB 7F 00 F1            CLR SB
+2302   61DE 7F 00 F2            CLR SD
+2303   61E1 7F 00 B9            CLR FLIP
+2304   61E4 86 FF               LDAA #$FF
+2305   61E6 97 B8               STAA HUMAN
+2306   61E8 96 F0       SP_NEW: LDAA SW                 ; vary the book choice from game to game
+2307   61EA 9B F1               ADDA SB
+2308   61EC 9B F2               ADDA SD
+2309   61EE C6 3B               LDAB #59
+2310   61F0 3D                  MUL
+2311   61F1 D8 EE               EORB RNDS
+2312   61F3 D7 EE               STAB RNDS
+2313   61F5 BD 50 49            JSR NEWPOS
+2314   61F8 86 FF               LDAA #$FF
+2315   61FA 97 BA               STAA LASTF
+2316   61FC 97 BB               STAA LASTT
+2317   61FE 97 C1               STAA HLF
+2318   6200 7F 00 ED            CLR HLEN
+2319   6203 7F 00 C6            CLR BGB
+2320   6206 BD 5B 9D            JSR CLS
+2321   6209 CE 80 70            LDX #HTXT
+2322   620C BD 5A F4            JSR INITTXT
+2323   620F 86 57               LDAA #$57
+2324   6211 B7 80 70            STAA HTXT
+2325   6214 CE 80 78            LDX #CTXT
+2326   6217 BD 5A F4            JSR INITTXT
+2327   621A 86 42               LDAA #$42
+2328   621C B7 80 78            STAA CTXT
+2329   621F BD 5D 1D            JSR DRAWSTATIC
+2330   6222 BD 5D 05            JSR DRAWBOARD
+2331   6225 BD 5D D9            JSR DRAWMOVES
+2332   6228 BD 62 8E            JSR DRAWSELF
+2333   622B BD 57 E7    SP_LOOP: JSR LISTMOVES
+2334   622E 97 D3               STAA MCNT
+2335   6230 27 33               BEQ SP_END
+2336   6232 96 ED               LDAA HLEN
+2337   6234 81 C8               CMPA #SPMAX
+2338   6236 24 42               BCC SP_DRAW
+2339   6238 BD 5B 09            JSR SCAN
+2340   623B 81 1B               CMPA #27
+2341   623D 27 23               BEQ SP_STOP
+2342   623F 81 51               CMPA #$51
+2343   6241 27 1F               BEQ SP_STOP
+2344   6243 BD 5A 5F            JSR CPUCALC
+2345   6246 BD 5A 89            JSR DOMOVE
+2346   6249 CE 80 7A            LDX #CTXT+2             ; the side that just moved
+2347   624C 7D 00 84            TST MYC
+2348   624F 27 03               BEQ SP_T
+2349   6251 CE 80 72            LDX #HTXT+2
+2350   6254 BD 5A D5    SP_T:   JSR SETTXT
+2351   6257 BD 5D 05            JSR DRAWBOARD
+2352   625A BD 5D D9            JSR DRAWMOVES
+2353   625D BD 62 8E            JSR DRAWSELF
+2354   6260 20 C9               BRA SP_LOOP
+2355   6262 7E 58 94    SP_STOP: JMP TITLE
+2356   6265 BD 54 68    SP_END: JSR INCHECK
+2357   6268 4D                  TSTA
+2358   6269 27 0F               BEQ SP_DRAW
+2359   626B 7D 00 84            TST MYC                 ; side to move is mated
+2360   626E 27 05               BEQ SP_BW
+2361   6270 7C 00 F0            INC SW
+2362   6273 20 08               BRA SP_NXT
+2363   6275 7C 00 F1    SP_BW:  INC SB
+2364   6278 20 03               BRA SP_NXT
+2365   627A 7C 00 F2    SP_DRAW: INC SD
+2366   627D BD 62 8E    SP_NXT: JSR DRAWSELF
+2367   6280 C6 06               LDAB #6
+2368   6282 CE 00 00    SP_DL:  LDX #0
+2369   6285 09          SP_DL2: DEX
+2370   6286 26 FD               BNE SP_DL2
+2371   6288 5A                  DECB
+2372   6289 26 F7               BNE SP_DL
+2373   628B 7E 61 E8            JMP SP_NEW
+2374   628E             DRAWSELF:
+2375   628E 86 55               LDAA #C_YEL
+2376   6290 97 C5               STAA FGB
+2377   6292 86 1A               LDAA #26
+2378   6294 97 C3               STAA TCOL
+2379   6296 86 30               LDAA #48
+2380   6298 97 C4               STAA TROW
+2381   629A 86 57               LDAA #$57
+2382   629C BD 5B AB            JSR PUTC
+2383   629F 86 3A               LDAA #$3A
+2384   62A1 BD 5B AB            JSR PUTC
+2385   62A4 96 F0               LDAA SW
+2386   62A6 BD 62 EE            JSR PRNUM
+2387   62A9 86 1A               LDAA #26
+2388   62AB 97 C3               STAA TCOL
+2389   62AD 86 36               LDAA #54
+2390   62AF 97 C4               STAA TROW
+2391   62B1 86 42               LDAA #$42
+2392   62B3 BD 5B AB            JSR PUTC
+2393   62B6 86 3A               LDAA #$3A
+2394   62B8 BD 5B AB            JSR PUTC
+2395   62BB 96 F1               LDAA SB
+2396   62BD BD 62 EE            JSR PRNUM
+2397   62C0 86 1A               LDAA #26
+2398   62C2 97 C3               STAA TCOL
+2399   62C4 86 3C               LDAA #60
+2400   62C6 97 C4               STAA TROW
+2401   62C8 86 44               LDAA #$44
+2402   62CA BD 5B AB            JSR PUTC
+2403   62CD 86 3A               LDAA #$3A
+2404   62CF BD 5B AB            JSR PUTC
+2405   62D2 96 F2               LDAA SD
+2406   62D4 BD 62 EE            JSR PRNUM
+2407   62D7 86 1A               LDAA #26
+2408   62D9 97 C3               STAA TCOL
+2409   62DB 86 42               LDAA #66
+2410   62DD 97 C4               STAA TROW
+2411   62DF 86 50               LDAA #$50
+2412   62E1 BD 5B AB            JSR PUTC
+2413   62E4 86 3A               LDAA #$3A
+2414   62E6 BD 5B AB            JSR PUTC
+2415   62E9 96 ED               LDAA HLEN
+2416   62EB 7E 62 EE            JMP PRNUM
+2417   62EE             ; PRNUM: A = 0-255, three digits at the text cursor
+2418   62EE 97 F3       PRNUM:  STAA NV
+2419   62F0 86 30               LDAA #$30
+2420   62F2 97 F4               STAA NC
+2421   62F4 96 F3       PN_H:   LDAA NV
+2422   62F6 81 64               CMPA #100
+2423   62F8 25 09               BCS PN_HD
+2424   62FA 80 64               SUBA #100
+2425   62FC 97 F3               STAA NV
+2426   62FE 7C 00 F4            INC NC
+2427   6301 20 F1               BRA PN_H
+2428   6303 96 F4       PN_HD:  LDAA NC
+2429   6305 BD 5B AB            JSR PUTC
+2430   6308 86 30               LDAA #$30
+2431   630A 97 F4               STAA NC
+2432   630C 96 F3       PN_T:   LDAA NV
+2433   630E 81 0A               CMPA #10
+2434   6310 25 09               BCS PN_TD
+2435   6312 80 0A               SUBA #10
+2436   6314 97 F3               STAA NV
+2437   6316 7C 00 F4            INC NC
+2438   6319 20 F1               BRA PN_T
+2439   631B 96 F4       PN_TD:  LDAA NC
+2440   631D BD 5B AB            JSR PUTC
+2441   6320 96 F3               LDAA NV
+2442   6322 8B 30               ADDA #$30
+2443   6324 7E 5B AB            JMP PUTC
+2444   6327             BOOK:
+2445   6327 00 14 34            .BYTE $00,$14,$34    ; -> e2e4
+2446   632A 00 13 33            .BYTE $00,$13,$33    ; -> d2d4
+2447   632D 00 06 25            .BYTE $00,$06,$25    ; -> g1f3
+2448   6330 00 12 32            .BYTE $00,$12,$32    ; -> c2c4
+2449   6333 02143464440625        .BYTE $02,$14,$34,$64,$44,$06,$25    ; e2e4 e7e5 -> g1f3
+2450   633A 02143464440532        .BYTE $02,$14,$34,$64,$44,$05,$32    ; e2e4 e7e5 -> f1c4
+2451   6341 02143464440122        .BYTE $02,$14,$34,$64,$44,$01,$22    ; e2e4 e7e5 -> b1c3
+2452   6348 02143462420625        .BYTE $02,$14,$34,$62,$42,$06,$25    ; e2e4 c7c5 -> g1f3
+2453   634F 02143462420122        .BYTE $02,$14,$34,$62,$42,$01,$22    ; e2e4 c7c5 -> b1c3
+2454   6356 02143464541333        .BYTE $02,$14,$34,$64,$54,$13,$33    ; e2e4 e7e6 -> d2d4
+2455   635D 02143462521333        .BYTE $02,$14,$34,$62,$52,$13,$33    ; e2e4 c7c6 -> d2d4
+2456   6364 02143463433443        .BYTE $02,$14,$34,$63,$43,$34,$43    ; e2e4 d7d5 -> e4d5
+2457   636B 02143476553444        .BYTE $02,$14,$34,$76,$55,$34,$44    ; e2e4 g8f6 -> e4e5
+2458   6372 02143476550122        .BYTE $02,$14,$34,$76,$55,$01,$22    ; e2e4 g8f6 -> b1c3
+2459   6379 02143463531333        .BYTE $02,$14,$34,$63,$53,$13,$33    ; e2e4 d7d6 -> d2d4
+2460   6380 02133363431232        .BYTE $02,$13,$33,$63,$43,$12,$32    ; d2d4 d7d5 -> c2c4
+2461   6387 02133363430625        .BYTE $02,$13,$33,$63,$43,$06,$25    ; d2d4 d7d5 -> g1f3
+2462   638E 02133376551232        .BYTE $02,$13,$33,$76,$55,$12,$32    ; d2d4 g8f6 -> c2c4
+2463   6395 02133376550625        .BYTE $02,$13,$33,$76,$55,$06,$25    ; d2d4 g8f6 -> g1f3
+2464   639C 02133364541434        .BYTE $02,$13,$33,$64,$54,$14,$34    ; d2d4 e7e6 -> e2e4
+2465   63A3 02133364541232        .BYTE $02,$13,$33,$64,$54,$12,$32    ; d2d4 e7e6 -> c2c4
+2466   63AA 02133365450625        .BYTE $02,$13,$33,$65,$45,$06,$25    ; d2d4 f7f5 -> g1f3
+2467   63B1 02133365451232        .BYTE $02,$13,$33,$65,$45,$12,$32    ; d2d4 f7f5 -> c2c4
+2468   63B8 02062563431333        .BYTE $02,$06,$25,$63,$43,$13,$33    ; g1f3 d7d5 -> d2d4
+2469   63BF 02062563431232        .BYTE $02,$06,$25,$63,$43,$12,$32    ; g1f3 d7d5 -> c2c4
+2470   63C6 02062576551232        .BYTE $02,$06,$25,$76,$55,$12,$32    ; g1f3 g8f6 -> c2c4
+2471   63CD 02062576551626        .BYTE $02,$06,$25,$76,$55,$16,$26    ; g1f3 g8f6 -> g2g3
+2472   63D4 02062562421232        .BYTE $02,$06,$25,$62,$42,$12,$32    ; g1f3 c7c5 -> c2c4
+2473   63DB 02062562421434        .BYTE $02,$06,$25,$62,$42,$14,$34    ; g1f3 c7c5 -> e2e4
+2474   63E2 02062564541333        .BYTE $02,$06,$25,$64,$54,$13,$33    ; g1f3 e7e6 -> d2d4
+2475   63E9 02062564541232        .BYTE $02,$06,$25,$64,$54,$12,$32    ; g1f3 e7e6 -> c2c4
+2476   63F0 02123264440122        .BYTE $02,$12,$32,$64,$44,$01,$22    ; c2c4 e7e5 -> b1c3
+2477   63F7 02123264441626        .BYTE $02,$12,$32,$64,$44,$16,$26    ; c2c4 e7e5 -> g2g3
+2478   63FE 02123276550122        .BYTE $02,$12,$32,$76,$55,$01,$22    ; c2c4 g8f6 -> b1c3
+2479   6405 02123276550625        .BYTE $02,$12,$32,$76,$55,$06,$25    ; c2c4 g8f6 -> g1f3
+2480   640C 02123262420625        .BYTE $02,$12,$32,$62,$42,$06,$25    ; c2c4 c7c5 -> g1f3
+2481   6413 02123262420122        .BYTE $02,$12,$32,$62,$42,$01,$22    ; c2c4 c7c5 -> b1c3
+2482   641A 02123264541333        .BYTE $02,$12,$32,$64,$54,$13,$33    ; c2c4 e7e6 -> d2d4
+2483   6421 02123264540625        .BYTE $02,$12,$32,$64,$54,$06,$25    ; c2c4 e7e6 -> g1f3
+2484   6428 0114346444          .BYTE $01,$14,$34,$64,$44    ; e2e4 -> e7e5
+2485   642D 0114346242          .BYTE $01,$14,$34,$62,$42    ; e2e4 -> c7c5
+2486   6432 0114346454          .BYTE $01,$14,$34,$64,$54    ; e2e4 -> e7e6
+2487   6437 0114346252          .BYTE $01,$14,$34,$62,$52    ; e2e4 -> c7c6
+2488   643C 0113336343          .BYTE $01,$13,$33,$63,$43    ; d2d4 -> d7d5
+2489   6441 0113337655          .BYTE $01,$13,$33,$76,$55    ; d2d4 -> g8f6
+2490   6446 0106256343          .BYTE $01,$06,$25,$63,$43    ; g1f3 -> d7d5
+2491   644B 0106257655          .BYTE $01,$06,$25,$76,$55    ; g1f3 -> g8f6
+2492   6450 0112326444          .BYTE $01,$12,$32,$64,$44    ; c2c4 -> e7e5
+2493   6455 0112327655          .BYTE $01,$12,$32,$76,$55    ; c2c4 -> g8f6
+2494   645A 0314346444062571        .BYTE $03,$14,$34,$64,$44,$06,$25,$71,$52    ; e2e4 e7e5 g1f3 -> b8c6
+2494   6462 52          
+2495   6463 0314346444062576        .BYTE $03,$14,$34,$64,$44,$06,$25,$76,$55    ; e2e4 e7e5 g1f3 -> g8f6
+2495   646B 55          
+2496   646C 0314346444012276        .BYTE $03,$14,$34,$64,$44,$01,$22,$76,$55    ; e2e4 e7e5 b1c3 -> g8f6
+2496   6474 55          
+2497   6475 0314346444012271        .BYTE $03,$14,$34,$64,$44,$01,$22,$71,$52    ; e2e4 e7e5 b1c3 -> b8c6
+2497   647D 52          
+2498   647E 0314346444053276        .BYTE $03,$14,$34,$64,$44,$05,$32,$76,$55    ; e2e4 e7e5 f1c4 -> g8f6
+2498   6486 55          
+2499   6487 0314346444053275        .BYTE $03,$14,$34,$64,$44,$05,$32,$75,$42    ; e2e4 e7e5 f1c4 -> f8c5
+2499   648F 42          
+2500   6490 0314346444133344        .BYTE $03,$14,$34,$64,$44,$13,$33,$44,$33    ; e2e4 e7e5 d2d4 -> e5d4
+2500   6498 33          
+2501   6499 0314346242062571        .BYTE $03,$14,$34,$62,$42,$06,$25,$71,$52    ; e2e4 c7c5 g1f3 -> b8c6
+2501   64A1 52          
+2502   64A2 0314346242062563        .BYTE $03,$14,$34,$62,$42,$06,$25,$63,$53    ; e2e4 c7c5 g1f3 -> d7d6
+2502   64AA 53          
+2503   64AB 0314346242062564        .BYTE $03,$14,$34,$62,$42,$06,$25,$64,$54    ; e2e4 c7c5 g1f3 -> e7e6
+2503   64B3 54          
+2504   64B4 0314346242012271        .BYTE $03,$14,$34,$62,$42,$01,$22,$71,$52    ; e2e4 c7c5 b1c3 -> b8c6
+2504   64BC 52          
+2505   64BD 0314346454133363        .BYTE $03,$14,$34,$64,$54,$13,$33,$63,$43    ; e2e4 e7e6 d2d4 -> d7d5
+2505   64C5 43          
+2506   64C6 0314346252133363        .BYTE $03,$14,$34,$62,$52,$13,$33,$63,$43    ; e2e4 c7c6 d2d4 -> d7d5
+2506   64CE 43          
+2507   64CF 0313336343123264        .BYTE $03,$13,$33,$63,$43,$12,$32,$64,$54    ; d2d4 d7d5 c2c4 -> e7e6
+2507   64D7 54          
+2508   64D8 0313336343123262        .BYTE $03,$13,$33,$63,$43,$12,$32,$62,$52    ; d2d4 d7d5 c2c4 -> c7c6
+2508   64E0 52          
+2509   64E1 0313336343062576        .BYTE $03,$13,$33,$63,$43,$06,$25,$76,$55    ; d2d4 d7d5 g1f3 -> g8f6
+2509   64E9 55          
+2510   64EA 0313337655123264        .BYTE $03,$13,$33,$76,$55,$12,$32,$64,$54    ; d2d4 g8f6 c2c4 -> e7e6
+2510   64F2 54          
+2511   64F3 0313337655123266        .BYTE $03,$13,$33,$76,$55,$12,$32,$66,$56    ; d2d4 g8f6 c2c4 -> g7g6
+2511   64FB 56          
+2512   64FC 0313337655062564        .BYTE $03,$13,$33,$76,$55,$06,$25,$64,$54    ; d2d4 g8f6 g1f3 -> e7e6
+2512   6504 54          
+2513   6505 0313337655062566        .BYTE $03,$13,$33,$76,$55,$06,$25,$66,$56    ; d2d4 g8f6 g1f3 -> g7g6
+2513   650D 56          
+2514   650E 0306256343133376        .BYTE $03,$06,$25,$63,$43,$13,$33,$76,$55    ; g1f3 d7d5 d2d4 -> g8f6
+2514   6516 55          
+2515   6517 0306256343123264        .BYTE $03,$06,$25,$63,$43,$12,$32,$64,$54    ; g1f3 d7d5 c2c4 -> e7e6
+2515   651F 54          
+2516   6520 0306257655123264        .BYTE $03,$06,$25,$76,$55,$12,$32,$64,$54    ; g1f3 g8f6 c2c4 -> e7e6
+2516   6528 54          
+2517   6529 0306257655123266        .BYTE $03,$06,$25,$76,$55,$12,$32,$66,$56    ; g1f3 g8f6 c2c4 -> g7g6
+2517   6531 56          
+2518   6532 0306257655162663        .BYTE $03,$06,$25,$76,$55,$16,$26,$63,$43    ; g1f3 g8f6 g2g3 -> d7d5
+2518   653A 43          
+2519   653B 0312326444012276        .BYTE $03,$12,$32,$64,$44,$01,$22,$76,$55    ; c2c4 e7e5 b1c3 -> g8f6
+2519   6543 55          
+2520   6544 0312326444062571        .BYTE $03,$12,$32,$64,$44,$06,$25,$71,$52    ; c2c4 e7e5 g1f3 -> b8c6
+2520   654C 52          
+2521   654D 0312326444162676        .BYTE $03,$12,$32,$64,$44,$16,$26,$76,$55    ; c2c4 e7e5 g2g3 -> g8f6
+2521   6555 55          
+2522   6556 0312327655012264        .BYTE $03,$12,$32,$76,$55,$01,$22,$64,$44    ; c2c4 g8f6 b1c3 -> e7e5
+2522   655E 44          
+2523   655F 0312327655062564        .BYTE $03,$12,$32,$76,$55,$06,$25,$64,$54    ; c2c4 g8f6 g1f3 -> e7e6
+2523   6567 54          
+2524   6568 FF                  .BYTE $FF
+2525   6569             SPRITES:
+2526   6569 000000000000003C        .BYTE $00,$00,$00,$00,$00,$00,$00,$3C,$00,$00,$FF,$00,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0
+2526   6571 0000FF0000FF0000
+2526   6579 3C0000FF0003FFC0
+2526   6581 00FF0003FFC00FFF
+2526   6589 F0          
+2527   658A 00C00003FCF00FFF        .BYTE $00,$C0,$00,$03,$FC,$F0,$0F,$FF,$3C,$3F,$3F,$F3,$FF,$FF,$CF,$FF,$CF,$FC,$3F,$03,$FC,$00,$3F,$F0,$00,$FF,$F0,$0F,$FF,$FF,$3F,$FF,$FF
+2527   6592 3C3F3FF3FFFFCFFF
+2527   659A CFFC3F03FC003FF0
+2527   65A2 00FFF00FFFFF3FFF
+2527   65AA FF          
+2528   65AB 003C0000FF0003FF        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$03,$F3,$C0,$03,$CF,$C0,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
+2528   65B3 C003F3C003CFC000
+2528   65BB FF00003C0000FF00
+2528   65C3 03FFC00FFFF03FFF
+2528   65CB FC          
+2529   65CC 3CFF3C3FFFFC0FFF        .BYTE $3C,$FF,$3C,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
+2529   65D4 F003FFC003FFC003
+2529   65DC FFC003FFC003FFC0
+2529   65E4 0FFFF03FFFFC3FFF
+2529   65EC FC          
+2530   65ED C33CC3F3FFFC3FFF        .BYTE $C3,$3C,$C3,$F3,$FF,$FC,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
+2530   65F5 FC0FFFF003FFC003
+2530   65FD FFC000FF0003FFC0
+2530   6605 0FFFF03FFFFC3FFF
+2530   660D FC          
+2531   660E 003C00033CC00FF3        .BYTE $00,$3C,$00,$03,$3C,$C0,$0F,$F3,$F0,$03,$3C,$C0,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
+2531   6616 F0033CC00FFFF003
+2531   661E FFC003FFC000FF00
+2531   6626 03FFC00FFFF03FFF
+2531   662E FC          
+2532   662F             FONT:
+2533   662F 0000000000303030        .BYTE $00,$00,$00,$00,$00,$30,$30,$30,$00,$30,$00,$00,$00,$00,$00
+2533   6637 00300000000000
+2534   663E 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+2534   6646 00000000000000
+2535   664D 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$30,$C0,$C0,$C0,$30
+2535   6655 000030C0C0C030
+2536   665C 300C0C0C30CC30FC        .BYTE $30,$0C,$0C,$0C,$30,$CC,$30,$FC,$30,$CC,$00,$30,$FC,$30,$00
+2536   6664 30CC0030FC3000
+2537   666B 00000000000000FC        .BYTE $00,$00,$00,$00,$00,$00,$00,$FC,$00,$00,$00,$00,$00,$00,$30
+2537   6673 00000000000030
+2538   667A 0C0C30C0C0FCCCCC        .BYTE $0C,$0C,$30,$C0,$C0,$FC,$CC,$CC,$CC,$FC,$30,$F0,$30,$30,$FC
+2538   6682 CCFC30F03030FC
+2539   6689 F00C30C0FCF00C30        .BYTE $F0,$0C,$30,$C0,$FC,$F0,$0C,$30,$0C,$F0,$CC,$CC,$FC,$0C,$0C
+2539   6691 0CF0CCCCFC0C0C
+2540   6698 FCC0F00CF03CC0F0        .BYTE $FC,$C0,$F0,$0C,$F0,$3C,$C0,$F0,$CC,$30,$FC,$0C,$30,$30,$30
+2540   66A0 CC30FC0C303030
+2541   66A7 FCCCFCCCFCFCCCFC        .BYTE $FC,$CC,$FC,$CC,$FC,$FC,$CC,$FC,$0C,$F0,$00,$30,$00,$30,$00
+2541   66AF 0CF00030003000
+2542   66B6 00000000000C30C0        .BYTE $00,$00,$00,$00,$00,$0C,$30,$C0,$30,$0C,$00,$FC,$00,$FC,$00
+2542   66BE 300C00FC00FC00
+2543   66C5 C0300C30C0F00C30        .BYTE $C0,$30,$0C,$30,$C0,$F0,$0C,$30,$00,$30,$00,$00,$00,$00,$00
+2543   66CD 00300000000000
+2544   66D4 30CCFCCCCCF0CCF0        .BYTE $30,$CC,$FC,$CC,$CC,$F0,$CC,$F0,$CC,$F0,$3C,$C0,$C0,$C0,$3C
+2544   66DC CCF03CC0C0C03C
+2545   66E3 F0CCCCCCF0FCC0F0        .BYTE $F0,$CC,$CC,$CC,$F0,$FC,$C0,$F0,$C0,$FC,$FC,$C0,$F0,$C0,$C0
+2545   66EB C0FCFCC0F0C0C0
+2546   66F2 3CC0CCCC3CCCCCFC        .BYTE $3C,$C0,$CC,$CC,$3C,$CC,$CC,$FC,$CC,$CC,$FC,$30,$30,$30,$FC
+2546   66FA CCCCFC303030FC
+2547   6701 0C0C0CCC30CCCCF0        .BYTE $0C,$0C,$0C,$CC,$30,$CC,$CC,$F0,$CC,$CC,$C0,$C0,$C0,$C0,$FC
+2547   6709 CCCCC0C0C0C0FC
+2548   6710 CCFCFCCCCCF0CCCC        .BYTE $CC,$FC,$FC,$CC,$CC,$F0,$CC,$CC,$CC,$CC,$30,$CC,$CC,$CC,$30
+2548   6718 CCCC30CCCCCC30
+2549   671F F0CCF0C0C030CCCC        .BYTE $F0,$CC,$F0,$C0,$C0,$30,$CC,$CC,$FC,$3C,$F0,$CC,$F0,$CC,$CC
+2549   6727 FC3CF0CCF0CCCC
+2550   672E 3CC0300CF0FC3030        .BYTE $3C,$C0,$30,$0C,$F0,$FC,$30,$30,$30,$30,$CC,$CC,$CC,$CC,$FC
+2550   6736 3030CCCCCCCCFC
+2551   673D CCCCCCCC30CCCCFC        .BYTE $CC,$CC,$CC,$CC,$30,$CC,$CC,$FC,$FC,$CC,$CC,$CC,$30,$CC,$CC
+2551   6745 FCCCCCCC30CCCC
+2552   674C CCCC303030FC0C30        .BYTE $CC,$CC,$30,$30,$30,$FC,$0C,$30,$C0,$FC,$00,$00,$00,$00,$00
+2552   6754 C0FC0000000000
+2553   675B 0000000000000000        .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+2553   6763 00000000000000
+2554   676A 00000000FC          .BYTE $00,$00,$00,$00,$FC
+2555   676F                     .END $5000
