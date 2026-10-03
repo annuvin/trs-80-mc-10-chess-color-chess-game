@@ -14,7 +14,7 @@ evaluation, but the program around it is new:
 - A single legality rule everywhere (no FAST/ORIGINAL toggle any more): moves
   that leave your king in check are rejected, mate and stalemate are reported
 
-Needs the **16K RAM expansion**. 4,785 bytes at $5000, variables at $7C00,
+Needs the **16K RAM expansion**. 5,999 bytes at $5000, variables at $7C00,
 stack at $8FFF.
 
 ## Load and play
@@ -44,6 +44,26 @@ Promotion: the pawn always becomes a queen; there is no underpromotion.
 **Q is a cold start**, not a return to your BASIC program. CG3 mode takes over
 the video RAM at $4000-$4BFF, which is where BASIC keeps its own variables, so
 there is nothing to return to.
+
+## Opening book
+
+The computer plays its first two moves from a small book (79 lines covering
+1.e4, 1.d4, 1.Nf3 and 1.c4 and the usual replies), choosing at random among
+the lines that match, so games don't all start alike. Book moves are instant
+and are only played if they are legal in the position; once you leave the
+book, or after its second move, the search takes over. The book is generated
+by `tools/gen_book.py` (every line is checked with python-chess); edit the
+lines there and rebuild.
+
+## Hidden self-play mode
+
+On the title screen press **S** (it isn't shown). The engine plays both sides,
+game after game, redrawing every move. The panel shows **W:** White wins,
+**B:** Black wins, **D:** draws and **P:** the current ply. Games longer than
+200 plies (`SPMAX`) count as draws, since the engine has no repetition or
+50-move rule and tends to shuffle when neither side finds progress. Hold
+**BREAK** (or **Q**) until the current move finishes to stop and return to the
+title screen. The book's random choice is reseeded each game, so openings vary.
 
 ## Speed
 
@@ -107,6 +127,10 @@ All in a headless emulator (Mike Tinnes' MC-10 core with the stock ROM), with
   every move the program's board matches python-chess; illegal entries are
   refused; mate and stalemate are reported correctly. The games included human
   and computer castling, en passant, promotions, and the computer being mated
+- Self-play: 5 consecutive engine-vs-engine games (1,000 plies) watched in the
+  emulator: every move legal per python-chess, board identical after every ply,
+  tallies and ply counter correct (all five hit the 200-ply cap and were
+  drawn)
 - The finished cassette image loads through BASIC's own `CLEAR`/`CLOADM`/`EXEC`
   and comes out byte-identical to the .bin; `Q` returns to the BASIC banner
 

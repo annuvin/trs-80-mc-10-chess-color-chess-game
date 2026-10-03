@@ -1242,6 +1242,26 @@ CHKF    .EQU $DF
 GKC     .EQU $E0
 LASTK   .EQU $E1
 
+BKP     .EQU $E3        ; word
+BKI     .EQU $E5
+BKN     .EQU $E6
+BKN2    .EQU $E7
+BKL     .EQU $E8
+BKC     .EQU $E9
+BKR     .EQU $EA
+BKF     .EQU $EB
+BKT     .EQU $EC
+HLEN    .EQU $ED        ; plies played this game
+RNDS    .EQU $EE
+SELFF   .EQU $EF        ; 1 = hidden self-play chosen on the title screen
+SW      .EQU $F0        ; self-play tallies
+SB      .EQU $F1
+SD      .EQU $F2
+NV      .EQU $F3
+NC      .EQU $F4
+SPMAX   .EQU 200        ; self-play: games longer than this many plies are drawn
+
+HIST    .EQU RAM+$490   ; first four plies (from,to)
 HTXT    .EQU RAM+$470   ; "U:E2E4",0
 CTXT    .EQU RAM+$478   ; "C:E7E5",0
 INTXT   .EQU RAM+$480   ; typed move echo
@@ -1264,7 +1284,11 @@ START:  SEI
         LDAA #GFXMODE
         STAA $BFFF
 TITLE:  JSR TITLESCR
+        TST SELFF
+        BEQ NEWGAME
+        JMP SELFPLAY
 NEWGAME: JSR NEWPOS
+        CLR HLEN
         LDAA #$FF
         STAA LASTF
         STAA LASTT
@@ -1322,24 +1346,8 @@ CPUTURN: LDAA #1
         LDAA #7
 CT_M:   STAA MSGID
         JSR STATUS
-        JSR GO
-        TST SEARCHOK
-        BEQ CT_FB
-        LDAB MYC                ; best piece's from-square
-        ORAB BESTP
-        LDX #SQ
-        ABX
-        LDAA 0,X
-        STAA FROMF
-        LDAA BESTM
-        STAA TOF
-        BRA CT_GO
-CT_FB:  LDX #MLIST              ; evaluator would resign: play first legal move
-        LDAA 0,X
-        STAA FROMF
-        LDAA 1,X
-        STAA TOF
-CT_GO:  JSR DOMOVE
+        JSR CPUCALC
+        JSR DOMOVE
         LDX #CTXT+2
         JSR SETTXT
         JSR DRAWBOARD
@@ -1484,6 +1492,31 @@ QUIT:   LDAA #TXTMODE
         JMP 0,X
 
 ; ---------------------------------------------------------------------
+;  CPUCALC: choose the computer's move (book, else search) -> FROMF/TOF.
+;           MLIST must hold the current legal list (MCNT > 0).
+; ---------------------------------------------------------------------
+CPUCALC: JSR BOOKMV
+        BNE CC_R
+        JSR GO
+        TST SEARCHOK
+        BEQ CC_FB
+        LDAB MYC                ; best piece's from-square
+        ORAB BESTP
+        LDX #SQ
+        ABX
+        LDAA 0,X
+        STAA FROMF
+        LDAA BESTM
+        STAA TOF
+        RTS
+CC_FB:  LDX #MLIST              ; evaluator would resign: play first legal move
+        LDAA 0,X
+        STAA FROMF
+        LDAA 1,X
+        STAA TOF
+CC_R:   RTS
+
+; ---------------------------------------------------------------------
 ;  DOMOVE: play FROMF -> TOF for the side to move, switch sides.
 ; ---------------------------------------------------------------------
 DOMOVE: LDAB MYC
@@ -1504,7 +1537,22 @@ DM_G:   STAB PIECE
         JSR MOVE
         LDX #USTACK
         STX UPTR
+        LDAA HLEN
+        CMPA #4
+        BCC DM_H
+        ASLA                    ; remember the first plies for the book
+        TAB
+        LDX #HIST
+        ABX
         LDAA FROMF
+        STAA 0,X
+        LDAA TOF
+        STAA 1,X
+DM_H:   LDAA HLEN
+        CMPA #$FF
+        BEQ DM_H2
+        INC HLEN
+DM_H2:  LDAA FROMF
         STAA LASTF
         LDAA TOF
         STAA LASTT
@@ -1908,20 +1956,31 @@ DL_F2:  PSHA
         LDAB #12
         LDX #T_16K
         JSR PRTAT
-        LDAA #26
-        LDAB #18
         LDX #T_YOUW
-        TST HUMAN
-        BEQ DSP1
+        LDAA HUMAN
+        BEQ DSP0
         LDX #T_YOUB
-DSP1:   JSR PRTAT
-        LDAA #26
-        LDAB #78
-        LDX #T_NEW
+        CMPA #$FF
+        BNE DSP0
+        LDX #T_SELF
+DSP0:   LDAA #26
+        LDAB #18
         JSR PRTAT
-        LDAA #26
-        LDAB #84
+        LDX #T_NEW
+        LDAA HUMAN
+        CMPA #$FF
+        BNE DSP2
+        LDX #T_HOLD
+DSP2:   LDAA #26
+        LDAB #78
+        JSR PRTAT
         LDX #T_QUIT
+        LDAA HUMAN
+        CMPA #$FF
+        BNE DSP3
+        LDX #T_BRK
+DSP3:   LDAA #26
+        LDAB #84
         JSR PRTAT
         RTS
 
@@ -1996,6 +2055,7 @@ STATUS: LDAA MSGID
 ;  title screen / colour choice
 ; ---------------------------------------------------------------------
 TITLESCR:
+        CLR SELFF
         CLR BGB
         JSR CLS
         CLR LBLI
@@ -2067,9 +2127,14 @@ TS_K:   JSR GETKEY
         BEQ TS_W
         CMPA #$42               ; B
         BEQ TS_BL
+        CMPA #$53               ; S: hidden self-play mode
+        BEQ TS_S
         CMPA #$51               ; Q
         BNE TS_K
         JMP QUIT
+TS_S:   LDAA #1
+        STAA SELFF
+        RTS
 TS_W:   CLR HUMAN
         RTS
 TS_BL:  LDAA #$20
@@ -2084,6 +2149,9 @@ T_CHESS: .strz "CHESS"
 T_16K:  .strz "16K"
 T_YOUW: .strz "YOU=W"
 T_YOUB: .strz "YOU=B"
+T_SELF: .strz "SELF"
+T_HOLD: .strz "HOLD"
+T_BRK:  .strz "BREAK"
 T_NEW:  .strz "N=NEW"
 T_QUIT: .strz "Q=QUIT"
 T_TITLE: .strz "MICROCHESS"
@@ -2110,9 +2178,353 @@ KEYTAB: .BYTE $00,$41,$42,$43,$44,$45,$46,$47
 ZEROS:  .fill 33
         .strz "MICROCHESS (C) 1996-2002 PETER JENNINGS PETERJ@BENLO.COM"
         .strz "MC-10 16K NATIVE 6803 PORT: CASTLING, EN PASSANT, 128X96 GRAPHICS"
+
+; ---------------------------------------------------------------------
+;  opening book: entries  n, n*(from,to) history prefix, reply from,to
+;  Matching entries are collected, one is chosen at random, and it is
+;  only played if it is in the legal list.
+; ---------------------------------------------------------------------
+RND:    LDAA $0A                ; free-running counter low byte
+        EORA RNDS
+        ROLA
+        STAA RNDS
+        RTS
+BOOKMV: LDAA HLEN
+        CMPA #4
+        BCC BK_NO
+        CLR BKC
+        LDX #BOOK
+        STX BKP
+BK_C:   JSR BKMATCH
+        CMPA #$FF
+        BEQ BK_CD
+        TSTA
+        BEQ BK_C
+        INC BKC
+        BRA BK_C
+BK_CD:  LDAA BKC
+        BEQ BK_NO
+        JSR RND
+BK_MOD: CMPA BKC
+        BCS BK_PK
+        SUBA BKC
+        BRA BK_MOD
+BK_PK:  STAA BKR
+        LDX #BOOK
+        STX BKP
+BK_F:   JSR BKMATCH
+        TSTA
+        BEQ BK_F
+        LDAA BKR
+        BEQ BK_GOT
+        DEC BKR
+        BRA BK_F
+BK_GOT: LDX #MLIST              ; is the book move legal here?
+        LDAB MCNT
+BK_L:   LDAA 0,X
+        CMPA BKF
+        BNE BK_NX
+        LDAA 1,X
+        CMPA BKT
+        BEQ BK_OK
+BK_NX:  INX
+        INX
+        DECB
+        BNE BK_L
+BK_NO:  CLRA
+        RTS
+BK_OK:  LDAA BKF
+        STAA FROMF
+        LDAA BKT
+        STAA TOF
+        LDAA #1
+        RTS
+; BKMATCH: examine entry at BKP, advance BKP. A = 1 match (reply in BKF/BKT),
+;          0 no match, $FF end of table
+BKMATCH: LDX BKP
+        LDAA 0,X
+        CMPA #$FF
+        BNE BKM_E
+        RTS
+BKM_E:   STAA BKN
+        ASLA
+        STAA BKN2
+        ADDA #3
+        STAA BKL
+        LDAA BKN
+        CMPA HLEN
+        BNE BKM_NO
+        CLR BKI
+BKM_L:   LDAA BKI
+        CMPA BKN2
+        BEQ BKM_YES
+        LDX BKP
+        INX
+        LDAB BKI
+        ABX
+        LDAA 0,X
+        STAA U1
+        LDX #HIST
+        LDAB BKI
+        ABX
+        LDAA 0,X
+        CMPA U1
+        BNE BKM_NO
+        INC BKI
+        BRA BKM_L
+BKM_YES: LDX BKP
+        LDAB BKN2
+        INCB
+        ABX
+        LDAA 0,X
+        STAA BKF
+        LDAA 1,X
+        STAA BKT
+        LDAA #1
+        BRA BKM_ADV
+BKM_NO:  CLRA
+BKM_ADV: PSHA
+        LDAB BKL
+        LDX BKP
+        ABX
+        STX BKP
+        PULA
+        RTS
+
+; ---------------------------------------------------------------------
+;  hidden self-play: both sides played by the engine, endless games,
+;  W/B/D tally.  Choose it with S on the title screen; hold BREAK or Q
+;  to stop.  Games longer than SPMAX plies count as draws.
+; ---------------------------------------------------------------------
+SELFPLAY: CLR SELFF
+        CLR SW
+        CLR SB
+        CLR SD
+        CLR FLIP
+        LDAA #$FF
+        STAA HUMAN
+SP_NEW: LDAA SW                 ; vary the book choice from game to game
+        ADDA SB
+        ADDA SD
+        LDAB #59
+        MUL
+        EORB RNDS
+        STAB RNDS
+        JSR NEWPOS
+        LDAA #$FF
+        STAA LASTF
+        STAA LASTT
+        STAA HLF
+        CLR HLEN
+        CLR BGB
+        JSR CLS
+        LDX #HTXT
+        JSR INITTXT
+        LDAA #$57
+        STAA HTXT
+        LDX #CTXT
+        JSR INITTXT
+        LDAA #$42
+        STAA CTXT
+        JSR DRAWSTATIC
+        JSR DRAWBOARD
+        JSR DRAWMOVES
+        JSR DRAWSELF
+SP_LOOP: JSR LISTMOVES
+        STAA MCNT
+        BEQ SP_END
+        LDAA HLEN
+        CMPA #SPMAX
+        BCC SP_DRAW
+        JSR SCAN
+        CMPA #27
+        BEQ SP_STOP
+        CMPA #$51
+        BEQ SP_STOP
+        JSR CPUCALC
+        JSR DOMOVE
+        LDX #CTXT+2             ; the side that just moved
+        TST MYC
+        BEQ SP_T
+        LDX #HTXT+2
+SP_T:   JSR SETTXT
+        JSR DRAWBOARD
+        JSR DRAWMOVES
+        JSR DRAWSELF
+        BRA SP_LOOP
+SP_STOP: JMP TITLE
+SP_END: JSR INCHECK
+        TSTA
+        BEQ SP_DRAW
+        TST MYC                 ; side to move is mated
+        BEQ SP_BW
+        INC SW
+        BRA SP_NXT
+SP_BW:  INC SB
+        BRA SP_NXT
+SP_DRAW: INC SD
+SP_NXT: JSR DRAWSELF
+        LDAB #6
+SP_DL:  LDX #0
+SP_DL2: DEX
+        BNE SP_DL2
+        DECB
+        BNE SP_DL
+        JMP SP_NEW
+DRAWSELF:
+        LDAA #C_YEL
+        STAA FGB
+        LDAA #26
+        STAA TCOL
+        LDAA #48
+        STAA TROW
+        LDAA #$57
+        JSR PUTC
+        LDAA #$3A
+        JSR PUTC
+        LDAA SW
+        JSR PRNUM
+        LDAA #26
+        STAA TCOL
+        LDAA #54
+        STAA TROW
+        LDAA #$42
+        JSR PUTC
+        LDAA #$3A
+        JSR PUTC
+        LDAA SB
+        JSR PRNUM
+        LDAA #26
+        STAA TCOL
+        LDAA #60
+        STAA TROW
+        LDAA #$44
+        JSR PUTC
+        LDAA #$3A
+        JSR PUTC
+        LDAA SD
+        JSR PRNUM
+        LDAA #26
+        STAA TCOL
+        LDAA #66
+        STAA TROW
+        LDAA #$50
+        JSR PUTC
+        LDAA #$3A
+        JSR PUTC
+        LDAA HLEN
+        JMP PRNUM
+; PRNUM: A = 0-255, three digits at the text cursor
+PRNUM:  STAA NV
+        LDAA #$30
+        STAA NC
+PN_H:   LDAA NV
+        CMPA #100
+        BCS PN_HD
+        SUBA #100
+        STAA NV
+        INC NC
+        BRA PN_H
+PN_HD:  LDAA NC
+        JSR PUTC
+        LDAA #$30
+        STAA NC
+PN_T:   LDAA NV
+        CMPA #10
+        BCS PN_TD
+        SUBA #10
+        STAA NV
+        INC NC
+        BRA PN_T
+PN_TD:  LDAA NC
+        JSR PUTC
+        LDAA NV
+        ADDA #$30
+        JMP PUTC
+BOOK:
+        .BYTE $00,$14,$34    ; -> e2e4
+        .BYTE $00,$13,$33    ; -> d2d4
+        .BYTE $00,$06,$25    ; -> g1f3
+        .BYTE $00,$12,$32    ; -> c2c4
+        .BYTE $02,$14,$34,$64,$44,$06,$25    ; e2e4 e7e5 -> g1f3
+        .BYTE $02,$14,$34,$64,$44,$05,$32    ; e2e4 e7e5 -> f1c4
+        .BYTE $02,$14,$34,$64,$44,$01,$22    ; e2e4 e7e5 -> b1c3
+        .BYTE $02,$14,$34,$62,$42,$06,$25    ; e2e4 c7c5 -> g1f3
+        .BYTE $02,$14,$34,$62,$42,$01,$22    ; e2e4 c7c5 -> b1c3
+        .BYTE $02,$14,$34,$64,$54,$13,$33    ; e2e4 e7e6 -> d2d4
+        .BYTE $02,$14,$34,$62,$52,$13,$33    ; e2e4 c7c6 -> d2d4
+        .BYTE $02,$14,$34,$63,$43,$34,$43    ; e2e4 d7d5 -> e4d5
+        .BYTE $02,$14,$34,$76,$55,$34,$44    ; e2e4 g8f6 -> e4e5
+        .BYTE $02,$14,$34,$76,$55,$01,$22    ; e2e4 g8f6 -> b1c3
+        .BYTE $02,$14,$34,$63,$53,$13,$33    ; e2e4 d7d6 -> d2d4
+        .BYTE $02,$13,$33,$63,$43,$12,$32    ; d2d4 d7d5 -> c2c4
+        .BYTE $02,$13,$33,$63,$43,$06,$25    ; d2d4 d7d5 -> g1f3
+        .BYTE $02,$13,$33,$76,$55,$12,$32    ; d2d4 g8f6 -> c2c4
+        .BYTE $02,$13,$33,$76,$55,$06,$25    ; d2d4 g8f6 -> g1f3
+        .BYTE $02,$13,$33,$64,$54,$14,$34    ; d2d4 e7e6 -> e2e4
+        .BYTE $02,$13,$33,$64,$54,$12,$32    ; d2d4 e7e6 -> c2c4
+        .BYTE $02,$13,$33,$65,$45,$06,$25    ; d2d4 f7f5 -> g1f3
+        .BYTE $02,$13,$33,$65,$45,$12,$32    ; d2d4 f7f5 -> c2c4
+        .BYTE $02,$06,$25,$63,$43,$13,$33    ; g1f3 d7d5 -> d2d4
+        .BYTE $02,$06,$25,$63,$43,$12,$32    ; g1f3 d7d5 -> c2c4
+        .BYTE $02,$06,$25,$76,$55,$12,$32    ; g1f3 g8f6 -> c2c4
+        .BYTE $02,$06,$25,$76,$55,$16,$26    ; g1f3 g8f6 -> g2g3
+        .BYTE $02,$06,$25,$62,$42,$12,$32    ; g1f3 c7c5 -> c2c4
+        .BYTE $02,$06,$25,$62,$42,$14,$34    ; g1f3 c7c5 -> e2e4
+        .BYTE $02,$06,$25,$64,$54,$13,$33    ; g1f3 e7e6 -> d2d4
+        .BYTE $02,$06,$25,$64,$54,$12,$32    ; g1f3 e7e6 -> c2c4
+        .BYTE $02,$12,$32,$64,$44,$01,$22    ; c2c4 e7e5 -> b1c3
+        .BYTE $02,$12,$32,$64,$44,$16,$26    ; c2c4 e7e5 -> g2g3
+        .BYTE $02,$12,$32,$76,$55,$01,$22    ; c2c4 g8f6 -> b1c3
+        .BYTE $02,$12,$32,$76,$55,$06,$25    ; c2c4 g8f6 -> g1f3
+        .BYTE $02,$12,$32,$62,$42,$06,$25    ; c2c4 c7c5 -> g1f3
+        .BYTE $02,$12,$32,$62,$42,$01,$22    ; c2c4 c7c5 -> b1c3
+        .BYTE $02,$12,$32,$64,$54,$13,$33    ; c2c4 e7e6 -> d2d4
+        .BYTE $02,$12,$32,$64,$54,$06,$25    ; c2c4 e7e6 -> g1f3
+        .BYTE $01,$14,$34,$64,$44    ; e2e4 -> e7e5
+        .BYTE $01,$14,$34,$62,$42    ; e2e4 -> c7c5
+        .BYTE $01,$14,$34,$64,$54    ; e2e4 -> e7e6
+        .BYTE $01,$14,$34,$62,$52    ; e2e4 -> c7c6
+        .BYTE $01,$13,$33,$63,$43    ; d2d4 -> d7d5
+        .BYTE $01,$13,$33,$76,$55    ; d2d4 -> g8f6
+        .BYTE $01,$06,$25,$63,$43    ; g1f3 -> d7d5
+        .BYTE $01,$06,$25,$76,$55    ; g1f3 -> g8f6
+        .BYTE $01,$12,$32,$64,$44    ; c2c4 -> e7e5
+        .BYTE $01,$12,$32,$76,$55    ; c2c4 -> g8f6
+        .BYTE $03,$14,$34,$64,$44,$06,$25,$71,$52    ; e2e4 e7e5 g1f3 -> b8c6
+        .BYTE $03,$14,$34,$64,$44,$06,$25,$76,$55    ; e2e4 e7e5 g1f3 -> g8f6
+        .BYTE $03,$14,$34,$64,$44,$01,$22,$76,$55    ; e2e4 e7e5 b1c3 -> g8f6
+        .BYTE $03,$14,$34,$64,$44,$01,$22,$71,$52    ; e2e4 e7e5 b1c3 -> b8c6
+        .BYTE $03,$14,$34,$64,$44,$05,$32,$76,$55    ; e2e4 e7e5 f1c4 -> g8f6
+        .BYTE $03,$14,$34,$64,$44,$05,$32,$75,$42    ; e2e4 e7e5 f1c4 -> f8c5
+        .BYTE $03,$14,$34,$64,$44,$13,$33,$44,$33    ; e2e4 e7e5 d2d4 -> e5d4
+        .BYTE $03,$14,$34,$62,$42,$06,$25,$71,$52    ; e2e4 c7c5 g1f3 -> b8c6
+        .BYTE $03,$14,$34,$62,$42,$06,$25,$63,$53    ; e2e4 c7c5 g1f3 -> d7d6
+        .BYTE $03,$14,$34,$62,$42,$06,$25,$64,$54    ; e2e4 c7c5 g1f3 -> e7e6
+        .BYTE $03,$14,$34,$62,$42,$01,$22,$71,$52    ; e2e4 c7c5 b1c3 -> b8c6
+        .BYTE $03,$14,$34,$64,$54,$13,$33,$63,$43    ; e2e4 e7e6 d2d4 -> d7d5
+        .BYTE $03,$14,$34,$62,$52,$13,$33,$63,$43    ; e2e4 c7c6 d2d4 -> d7d5
+        .BYTE $03,$13,$33,$63,$43,$12,$32,$64,$54    ; d2d4 d7d5 c2c4 -> e7e6
+        .BYTE $03,$13,$33,$63,$43,$12,$32,$62,$52    ; d2d4 d7d5 c2c4 -> c7c6
+        .BYTE $03,$13,$33,$63,$43,$06,$25,$76,$55    ; d2d4 d7d5 g1f3 -> g8f6
+        .BYTE $03,$13,$33,$76,$55,$12,$32,$64,$54    ; d2d4 g8f6 c2c4 -> e7e6
+        .BYTE $03,$13,$33,$76,$55,$12,$32,$66,$56    ; d2d4 g8f6 c2c4 -> g7g6
+        .BYTE $03,$13,$33,$76,$55,$06,$25,$64,$54    ; d2d4 g8f6 g1f3 -> e7e6
+        .BYTE $03,$13,$33,$76,$55,$06,$25,$66,$56    ; d2d4 g8f6 g1f3 -> g7g6
+        .BYTE $03,$06,$25,$63,$43,$13,$33,$76,$55    ; g1f3 d7d5 d2d4 -> g8f6
+        .BYTE $03,$06,$25,$63,$43,$12,$32,$64,$54    ; g1f3 d7d5 c2c4 -> e7e6
+        .BYTE $03,$06,$25,$76,$55,$12,$32,$64,$54    ; g1f3 g8f6 c2c4 -> e7e6
+        .BYTE $03,$06,$25,$76,$55,$12,$32,$66,$56    ; g1f3 g8f6 c2c4 -> g7g6
+        .BYTE $03,$06,$25,$76,$55,$16,$26,$63,$43    ; g1f3 g8f6 g2g3 -> d7d5
+        .BYTE $03,$12,$32,$64,$44,$01,$22,$76,$55    ; c2c4 e7e5 b1c3 -> g8f6
+        .BYTE $03,$12,$32,$64,$44,$06,$25,$71,$52    ; c2c4 e7e5 g1f3 -> b8c6
+        .BYTE $03,$12,$32,$64,$44,$16,$26,$76,$55    ; c2c4 e7e5 g2g3 -> g8f6
+        .BYTE $03,$12,$32,$76,$55,$01,$22,$64,$44    ; c2c4 g8f6 b1c3 -> e7e5
+        .BYTE $03,$12,$32,$76,$55,$06,$25,$64,$54    ; c2c4 g8f6 g1f3 -> e7e6
+        .BYTE $FF
 SPRITES:
         .BYTE $00,$00,$00,$00,$00,$00,$00,$3C,$00,$00,$FF,$00,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0
-        .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$C0,$3C,$FF,$C0,$30,$3F,$F0,$00,$3F,$F0,$00,$FF,$F0,$00,$FF,$F0,$03,$FF,$F0,$0F,$FF,$FC
+        .BYTE $00,$C0,$00,$03,$FC,$F0,$0F,$FF,$3C,$3F,$3F,$F3,$FF,$FF,$CF,$FF,$CF,$FC,$3F,$03,$FC,$00,$3F,$F0,$00,$FF,$F0,$0F,$FF,$FF,$3F,$FF,$FF
         .BYTE $00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$03,$F3,$C0,$03,$CF,$C0,$00,$FF,$00,$00,$3C,$00,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC
         .BYTE $3C,$FF,$3C,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
         .BYTE $C3,$3C,$C3,$F3,$FF,$FC,$3F,$FF,$FC,$0F,$FF,$F0,$03,$FF,$C0,$03,$FF,$C0,$00,$FF,$00,$03,$FF,$C0,$0F,$FF,$F0,$3F,$FF,$FC,$3F,$FF,$FC
