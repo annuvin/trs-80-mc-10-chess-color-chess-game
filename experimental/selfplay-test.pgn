@@ -1,0 +1,4 @@
+[Event "MC-10 Microchess self-play validation"]
+[Result "1/2-1/2"]
+
+1. e4 e5 2. Nf3 Nc6 3. Nc3 Nf6 4. Bd3 Bd6 5. O-O O-O 6. h4 h5 7. a4 a5 8. Re1 Re8 9. Re3 Re6 10. Ra2 Ra7 11. g3 g6 12. b3 b6 13. Rb2 Rb7 14. Qe2 Qe7 15. Ng5 Nd4 16. Nxe6 Nxe2+ 17. Nxe2 fxe6 18. c4 c5 19. Rc2 Rc7 20. Rc3 Rc6 21. f3 Bb7 22. Bb2 Bc8 23. Bc1 Bb7 24. Bb2 Bc8 25. Bc1 1/2-1/2

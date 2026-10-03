@@ -1,0 +1,1203 @@
+0001   0000             ; Compact native MC6803 chess for a stock 4K MC-10.
+0002   0000             ; Inspired by Peter Jennings' MicroChess and the supplied 6502 source.
+0003   0000             ; Native 0x88 board / legal moves / negamax with Jennings-derived features.
+0004   0000             ; Original piece values, queen-weighted mobility, capture counts and bonus.
+0005   0000             ; Not a translation of the original JANUS/TREE/STRATGY state machine.
+0006   0000             ; MicroChess (c) 1996-2002 Peter Jennings, peterj@benlo.com
+0007   0000             ; Telemark: tasm -68 -x3 -b -g3 microchess-4k.asm microchess-4k.bin
+0008   0000             ; CLEAR 0,17407 : CLOADM : EXEC 17408. Stock MICROCOLOR BASIC ROM.
+0009   0000             ; Piece codes: P=1 N=2 B=3 R=4 Q=5 K=6; black adds 8.
+0010   0000             ; FRAME offsets: type=0 from=1 to=2 piece=3 captured=4 dir=5 limit=6,
+0011   0000             ; table=7..8 best=9 found=10 depth=11 bonus=12 bestfrom=13 bestto=14.
+0012   0000                     .MSFIRST
+0013   4400                     .ORG $4400
+0014   4400 07          START:  TPA
+0015   4401 B7 4D FC            STAA OLDCC
+0016   4404 BF 4D FD            STS OLDSP
+0017   4407 0F                  SEI
+0018   4408 8E 4F FF            LDS #$4FFF
+0019   440B             PRIVATE_STACK:
+0020   440B 86 02               LDAA #2
+0021   440D B7 4D FF            STAA LEVEL
+0022   4410 BD 44 7F            JSR NEWGAME
+0023   4413             UI_MAIN:
+0024   4413 BD 4A EA            JSR DRAW
+0025   4416             UI_WAIT:
+0026   4416 BD F8 83            JSR $F883
+0027   4419 4D                  TSTA
+0028   441A 27 FA               BEQ UI_WAIT
+0029   441C 81 61               CMPA #$61
+0030   441E 25 02               BCS UI_KEY
+0031   4420 80 20               SUBA #$20
+0032   4422 81 51       UI_KEY: CMPA #$51
+0033   4424 26 0E               BNE UI_NQ
+0034   4426             UI_QUIT:
+0035   4426 CE 40 00            LDX #$4000
+0036   4429 FF 42 80            STX $4280
+0037   442C BE 4D FD            LDS OLDSP
+0038   442F B6 4D FC            LDAA OLDCC
+0039   4432 06                  TAP
+0040   4433 39                  RTS
+0041   4434 81 4E       UI_NQ:  CMPA #$4E
+0042   4436 26 05               BNE UI_NN
+0043   4438 BD 44 7F            JSR NEWGAME
+0044   443B 20 D6               BRA UI_MAIN
+0045   443D 81 53       UI_NN:  CMPA #$53
+0046   443F 26 0D               BNE UI_NS
+0047   4441 86 03               LDAA #3
+0048   4443 B0 4D FF            SUBA LEVEL
+0049   4446 B7 4D FF            STAA LEVEL
+0050   4449 7F 4E 02            CLR INPUTLEN
+0051   444C 20 C5               BRA UI_MAIN
+0052   444E 81 08       UI_NS:  CMPA #8
+0053   4450 27 0B               BEQ UI_BACK
+0054   4452 81 15               CMPA #$15
+0055   4454 27 07               BEQ UI_BACK
+0056   4456 81 0D               CMPA #$0D
+0057   4458 26 10               BNE UI_CHAR
+0058   445A 7E 44 C6            JMP UI_ENTER
+0059   445D             UI_BACK:
+0060   445D B6 4E 02            LDAA INPUTLEN
+0061   4460 27 B4               BEQ UI_WAIT
+0062   4462 7A 4E 02            DEC INPUTLEN
+0063   4465 BD 4C 1F            JSR DRAW_INPUT
+0064   4468 20 AC               BRA UI_WAIT
+0065   446A             UI_CHAR:
+0066   446A F6 4E 02            LDAB INPUTLEN
+0067   446D C1 04               CMPB #4
+0068   446F 24 A5               BCC UI_WAIT
+0069   4471 CE 4E 03            LDX #INPUTBUF
+0070   4474 3A                  ABX
+0071   4475 A7 00               STAA 0,X
+0072   4477 7C 4E 02            INC INPUTLEN
+0073   447A BD 4C 1F            JSR DRAW_INPUT
+0074   447D 20 97               BRA UI_WAIT
+0075   447F             
+0076   447F             NEWGAME:
+0077   447F CE 4E 5B            LDX #BOARD
+0078   4482 4F                  CLRA
+0079   4483             NG_ZERO:
+0080   4483 A7 00               STAA 0,X
+0081   4485 08                  INX
+0082   4486 8C 4E DB            CPX #BOARD+128
+0083   4489 26 F8               BNE NG_ZERO
+0084   448B 5F                  CLRB
+0085   448C             NG_PIECES:
+0086   448C CE 4C 97            LDX #INITIAL
+0087   448F 3A                  ABX
+0088   4490 A6 00               LDAA 0,X
+0089   4492 CE 4E 5B            LDX #BOARD
+0090   4495 3A                  ABX
+0091   4496 A7 00               STAA 0,X
+0092   4498 8A 08               ORAA #8
+0093   449A A7 70               STAA $70,X
+0094   449C 86 01               LDAA #1
+0095   449E A7 10               STAA $10,X
+0096   44A0 86 09               LDAA #9
+0097   44A2 A7 60               STAA $60,X
+0098   44A4 5C                  INCB
+0099   44A5 C1 08               CMPB #8
+0100   44A7 26 E3               BNE NG_PIECES
+0101   44A9 86 04               LDAA #4
+0102   44AB B7 4E 0D            STAA KINGW
+0103   44AE 86 74               LDAA #$74
+0104   44B0 B7 4E 0E            STAA KINGB
+0105   44B3 7F 4E 02            CLR INPUTLEN
+0106   44B6 7F 4E 07            CLR GAMEOVER
+0107   44B9 7F 4E 0A            CLR HASLAST
+0108   44BC 7F 4E 00            CLR SIDE
+0109   44BF CE 4E 2B            LDX #FRAMES
+0110   44C2 FF 4E 29            STX FRAMEPTR
+0111   44C5 39                  RTS
+0112   44C6             
+0113   44C6             UI_ENTER:
+0114   44C6 B6 4E 07            LDAA GAMEOVER
+0115   44C9 27 03               BEQ UE_GO
+0116   44CB 7E 44 16            JMP UI_WAIT
+0117   44CE B6 4E 02    UE_GO:  LDAA INPUTLEN
+0118   44D1 81 04               CMPA #4
+0119   44D3 26 55               BNE UE_BAD
+0120   44D5 CE 4E 03            LDX #INPUTBUF
+0121   44D8 BD 45 95            JSR PARSE_SQUARE
+0122   44DB 25 4D               BCS UE_BAD
+0123   44DD B7 4E 08            STAA WANTFROM
+0124   44E0 CE 4E 05            LDX #INPUTBUF+2
+0125   44E3 BD 45 95            JSR PARSE_SQUARE
+0126   44E6 25 42               BCS UE_BAD
+0127   44E8 B7 4E 09            STAA WANTTO
+0128   44EB 7F 4E 00            CLR SIDE
+0129   44EE 86 01               LDAA #1
+0130   44F0 B7 4E 01            STAA MODE
+0131   44F3 BD 45 B3            JSR GEN
+0132   44F6 FE 4E 29            LDX FRAMEPTR
+0133   44F9 A6 0A               LDAA 10,X
+0134   44FB 27 2D               BEQ UE_BAD
+0135   44FD BD 48 46            JSR MAKE
+0136   4500 7F 4E 02            CLR INPUTLEN
+0137   4503 BD 4A EA            JSR DRAW
+0138   4506 CE 4D 34            LDX #MSG_THINK
+0139   4509 BD 4C 04            JSR MESSAGE
+0140   450C 86 08               LDAA #8
+0141   450E B7 4E 00            STAA SIDE
+0142   4511 86 02               LDAA #2
+0143   4513 B7 4E 01            STAA MODE
+0144   4516 BD 45 B3            JSR GEN
+0145   4519 FE 4E 29            LDX FRAMEPTR
+0146   451C A6 0A               LDAA 10,X
+0147   451E 26 19               BNE UE_SEARCH
+0148   4520 BD 48 CE            JSR CHECK
+0149   4523 4D                  TSTA
+0150   4524 27 67               BEQ UE_DRAW
+0151   4526 86 01               LDAA #1
+0152   4528 20 65               BRA UE_FINISH
+0153   452A             UE_BAD:
+0154   452A 7F 4E 02            CLR INPUTLEN
+0155   452D BD 4C 1F            JSR DRAW_INPUT
+0156   4530 CE 4D 49            LDX #MSG_BAD
+0157   4533 BD 4C 04            JSR MESSAGE
+0158   4536 7E 44 16            JMP UI_WAIT
+0159   4539             UE_SEARCH:
+0160   4539 7F 4E 01            CLR MODE
+0161   453C FE 4E 29            LDX FRAMEPTR
+0162   453F B6 4D FF            LDAA LEVEL
+0163   4542 A7 0B               STAA 11,X
+0164   4544 BD 48 2E            JSR SEARCH
+0165   4547 FE 4E 29            LDX FRAMEPTR
+0166   454A A6 0D               LDAA 13,X
+0167   454C A7 01               STAA 1,X
+0168   454E B7 4E 0B            STAA LASTFROM
+0169   4551 E6 0D               LDAB 13,X
+0170   4553 A6 0E               LDAA 14,X
+0171   4555 A7 02               STAA 2,X
+0172   4557 B7 4E 0C            STAA LASTTO
+0173   455A CE 4E 5B            LDX #BOARD
+0174   455D 3A                  ABX
+0175   455E A6 00               LDAA 0,X
+0176   4560 FE 4E 29            LDX FRAMEPTR
+0177   4563 A7 03               STAA 3,X
+0178   4565 84 07               ANDA #7
+0179   4567 A7 00               STAA 0,X
+0180   4569 BD 48 46            JSR MAKE
+0181   456C 86 01               LDAA #1
+0182   456E B7 4E 0A            STAA HASLAST
+0183   4571 7F 4E 00            CLR SIDE
+0184   4574 86 02               LDAA #2
+0185   4576 B7 4E 01            STAA MODE
+0186   4579 BD 45 B3            JSR GEN
+0187   457C FE 4E 29            LDX FRAMEPTR
+0188   457F A6 0A               LDAA 10,X
+0189   4581 26 0F               BNE UE_CONTINUE
+0190   4583 BD 48 CE            JSR CHECK
+0191   4586 4D                  TSTA
+0192   4587 27 04               BEQ UE_DRAW
+0193   4589 86 02               LDAA #2
+0194   458B 20 02               BRA UE_FINISH
+0195   458D             UE_DRAW:
+0196   458D 86 03               LDAA #3
+0197   458F             UE_FINISH:
+0198   458F B7 4E 07            STAA GAMEOVER
+0199   4592             UE_CONTINUE:
+0200   4592 7E 44 13            JMP UI_MAIN
+0201   4595             PARSE_SQUARE:
+0202   4595 A6 00               LDAA 0,X
+0203   4597 80 41               SUBA #$41
+0204   4599 81 08               CMPA #8
+0205   459B 24 14               BCC PS_BAD
+0206   459D B7 4E 21            STAA UITMP
+0207   45A0 A6 01               LDAA 1,X
+0208   45A2 80 31               SUBA #$31
+0209   45A4 81 08               CMPA #8
+0210   45A6 24 09               BCC PS_BAD
+0211   45A8 48                  ASLA
+0212   45A9 48                  ASLA
+0213   45AA 48                  ASLA
+0214   45AB 48                  ASLA
+0215   45AC BA 4E 21            ORAA UITMP
+0216   45AF 0C                  CLC
+0217   45B0 39                  RTS
+0218   45B1 0D          PS_BAD: SEC
+0219   45B2 39                  RTS
+0220   45B3             
+0221   45B3             ; GEN preserves each node's enumeration state in its own 16-byte frame.
+0222   45B3             ; MODE: 0 search, 1 requested move, 2 any legal move, 3 enumeration,
+0223   45B3             ; 4 pseudo-legal mobility/capture statistics (original counts omit some checks).
+0224   45B3 FE 4E 29    GEN:    LDX FRAMEPTR
+0225   45B6 6F 0A               CLR 10,X
+0226   45B8 6F 0C               CLR 12,X
+0227   45BA 86 87               LDAA #$87              ; -121 (below checkmate score)
+0228   45BC A7 09               STAA 9,X
+0229   45BE B6 4E 01            LDAA MODE
+0230   45C1 26 0E               BNE G_BEGIN
+0231   45C3 A6 0B               LDAA 11,X
+0232   45C5 26 0A               BNE G_BEGIN
+0233   45C7 BD 4A 01            JSR EVALUATE         ; stand pat at the capture-only frontier
+0234   45CA FE 4E 29            LDX FRAMEPTR
+0235   45CD A7 09               STAA 9,X
+0236   45CF 6C 0A               INC 10,X
+0237   45D1             G_BEGIN:
+0238   45D1 86 FF               LDAA #$FF
+0239   45D3 A7 01               STAA 1,X
+0240   45D5 FE 4E 29    G_NEXT: LDX FRAMEPTR
+0241   45D8 6C 01               INC 1,X
+0242   45DA A6 01               LDAA 1,X
+0243   45DC 85 08               BITA #8
+0244   45DE 27 04               BEQ G_RANK
+0245   45E0 8B 08               ADDA #8
+0246   45E2 A7 01               STAA 1,X
+0247   45E4 85 80       G_RANK: BITA #$80
+0248   45E6 27 03               BEQ LONG_0
+0249   45E8 7E 46 C0            JMP G_EXIT
+0250   45EB             LONG_0:
+0251   45EB 16                  TAB
+0252   45EC CE 4E 5B            LDX #BOARD
+0253   45EF 3A                  ABX
+0254   45F0 A6 00               LDAA 0,X
+0255   45F2 27 E1               BEQ G_NEXT
+0256   45F4 FE 4E 29            LDX FRAMEPTR
+0257   45F7 A7 03               STAA 3,X
+0258   45F9 84 08               ANDA #8
+0259   45FB B1 4E 00            CMPA SIDE
+0260   45FE 26 D5               BNE G_NEXT
+0261   4600 B6 4E 01            LDAA MODE
+0262   4603 81 01               CMPA #1
+0263   4605 26 07               BNE G_TYPE
+0264   4607 A6 01               LDAA 1,X
+0265   4609 B1 4E 08            CMPA WANTFROM
+0266   460C 26 C7               BNE G_NEXT
+0267   460E A6 03       G_TYPE: LDAA 3,X
+0268   4610 84 07               ANDA #7
+0269   4612 A7 00               STAA 0,X
+0270   4614 81 01               CMPA #1
+0271   4616 26 06               BNE G_OTHER
+0272   4618 BD 46 D2            JSR G_PAWN
+0273   461B 7E 46 B7            JMP G_AFTER_PIECE
+0274   461E             G_OTHER:
+0275   461E CC 4C 9F            LDD #DIRECTIONS
+0276   4621 ED 07               STD 7,X
+0277   4623 6F 05               CLR 5,X
+0278   4625 C6 08               LDAB #8
+0279   4627 E7 06               STAB 6,X
+0280   4629 A6 00               LDAA 0,X
+0281   462B 81 02               CMPA #2
+0282   462D 26 07               BNE G_NOTKNIGHT
+0283   462F CC 4C A7            LDD #KNIGHTDIRS
+0284   4632 ED 07               STD 7,X
+0285   4634 20 12               BRA G_DIR
+0286   4636             G_NOTKNIGHT:
+0287   4636 81 03               CMPA #3
+0288   4638 26 06               BNE G_NOTBISHOP
+0289   463A 86 04               LDAA #4
+0290   463C A7 05               STAA 5,X
+0291   463E 20 08               BRA G_DIR
+0292   4640             G_NOTBISHOP:
+0293   4640 81 04               CMPA #4
+0294   4642 26 04               BNE G_DIR
+0295   4644 C6 04               LDAB #4
+0296   4646 E7 06               STAB 6,X
+0297   4648 FE 4E 29    G_DIR:  LDX FRAMEPTR
+0298   464B A6 01               LDAA 1,X
+0299   464D A7 02               STAA 2,X
+0300   464F FE 4E 29    G_STEP: LDX FRAMEPTR
+0301   4652 E6 05               LDAB 5,X
+0302   4654 EE 07               LDX 7,X
+0303   4656 3A                  ABX
+0304   4657 A6 00               LDAA 0,X
+0305   4659 FE 4E 29            LDX FRAMEPTR
+0306   465C AB 02               ADDA 2,X
+0307   465E A7 02               STAA 2,X
+0308   4660 85 88               BITA #$88
+0309   4662 26 48               BNE G_NEXTDIR
+0310   4664 16                  TAB
+0311   4665 CE 4E 5B            LDX #BOARD
+0312   4668 3A                  ABX
+0313   4669 A6 00               LDAA 0,X
+0314   466B 27 15               BEQ G_CAND
+0315   466D F6 4E 00            LDAB SIDE
+0316   4670 F7 4E 14            STAB TESTSIDE
+0317   4673 16                  TAB
+0318   4674 84 08               ANDA #8
+0319   4676 B1 4E 14            CMPA TESTSIDE
+0320   4679 27 31               BEQ G_NEXTDIR
+0321   467B 17                  TBA
+0322   467C 84 07               ANDA #7
+0323   467E 81 06               CMPA #6               ; King capture is never an actual chess move
+0324   4680 27 2A               BEQ G_NEXTDIR
+0325   4682 FE 4E 29    G_CAND: LDX FRAMEPTR
+0326   4685 E6 02               LDAB 2,X
+0327   4687 CE 4E 5B            LDX #BOARD
+0328   468A 3A                  ABX
+0329   468B A6 00               LDAA 0,X
+0330   468D FE 4E 29            LDX FRAMEPTR
+0331   4690 A7 04               STAA 4,X
+0332   4692 BD 47 77            JSR TRY
+0333   4695 BD 46 C1            JSR STOP_EARLY
+0334   4698 4D                  TSTA
+0335   4699 26 25               BNE G_EXIT
+0336   469B FE 4E 29            LDX FRAMEPTR
+0337   469E A6 00               LDAA 0,X
+0338   46A0 81 02               CMPA #2
+0339   46A2 27 08               BEQ G_NEXTDIR
+0340   46A4 81 06               CMPA #6
+0341   46A6 27 04               BEQ G_NEXTDIR
+0342   46A8 A6 04               LDAA 4,X
+0343   46AA 27 A3               BEQ G_STEP
+0344   46AC             G_NEXTDIR:
+0345   46AC FE 4E 29            LDX FRAMEPTR
+0346   46AF 6C 05               INC 5,X
+0347   46B1 A6 05               LDAA 5,X
+0348   46B3 A1 06               CMPA 6,X
+0349   46B5 26 91               BNE G_DIR
+0350   46B7             G_AFTER_PIECE:
+0351   46B7 BD 46 C1            JSR STOP_EARLY
+0352   46BA 4D                  TSTA
+0353   46BB 26 03               BNE G_EXIT
+0354   46BD 7E 45 D5            JMP G_NEXT
+0355   46C0 39          G_EXIT: RTS
+0356   46C1             STOP_EARLY:
+0357   46C1 B6 4E 01            LDAA MODE
+0358   46C4 27 0A               BEQ SE_NO
+0359   46C6 81 03               CMPA #3
+0360   46C8 27 06               BEQ SE_NO
+0361   46CA FE 4E 29            LDX FRAMEPTR
+0362   46CD A6 0A               LDAA 10,X
+0363   46CF 39                  RTS
+0364   46D0 4F          SE_NO:  CLRA
+0365   46D1 39                  RTS
+0366   46D2             
+0367   46D2             G_PAWN:
+0368   46D2 86 10               LDAA #16
+0369   46D4 F6 4E 00            LDAB SIDE
+0370   46D7 27 01               BEQ GP_FORWARD
+0371   46D9 40                  NEGA
+0372   46DA             GP_FORWARD:
+0373   46DA FE 4E 29            LDX FRAMEPTR
+0374   46DD AB 01               ADDA 1,X
+0375   46DF A7 02               STAA 2,X
+0376   46E1 85 88               BITA #$88
+0377   46E3 26 42               BNE GP_CAP_START
+0378   46E5 16                  TAB
+0379   46E6 CE 4E 5B            LDX #BOARD
+0380   46E9 3A                  ABX
+0381   46EA A6 00               LDAA 0,X
+0382   46EC 26 39               BNE GP_CAP_START
+0383   46EE BD 47 77            JSR TRY
+0384   46F1 BD 46 C1            JSR STOP_EARLY
+0385   46F4 4D                  TSTA
+0386   46F5 26 7F               BNE GP_EXIT
+0387   46F7 FE 4E 29            LDX FRAMEPTR
+0388   46FA A6 01               LDAA 1,X
+0389   46FC 84 70               ANDA #$70
+0390   46FE F6 4E 00            LDAB SIDE
+0391   4701 26 08               BNE GP_BLACK_START
+0392   4703 81 10               CMPA #$10
+0393   4705 26 20               BNE GP_CAP_START
+0394   4707 86 20               LDAA #32
+0395   4709 20 06               BRA GP_DOUBLE
+0396   470B             GP_BLACK_START:
+0397   470B 81 60               CMPA #$60
+0398   470D 26 18               BNE GP_CAP_START
+0399   470F 86 E0               LDAA #$E0
+0400   4711             GP_DOUBLE:
+0401   4711 AB 01               ADDA 1,X
+0402   4713 A7 02               STAA 2,X
+0403   4715 16                  TAB
+0404   4716 CE 4E 5B            LDX #BOARD
+0405   4719 3A                  ABX
+0406   471A A6 00               LDAA 0,X
+0407   471C 26 09               BNE GP_CAP_START
+0408   471E BD 47 77            JSR TRY
+0409   4721 BD 46 C1            JSR STOP_EARLY
+0410   4724 4D                  TSTA
+0411   4725 26 4F               BNE GP_EXIT
+0412   4727             GP_CAP_START:
+0413   4727 FE 4E 29            LDX FRAMEPTR
+0414   472A 86 05               LDAA #5
+0415   472C A7 05               STAA 5,X
+0416   472E             GP_CAP_LOOP:
+0417   472E FE 4E 29            LDX FRAMEPTR
+0418   4731 E6 05               LDAB 5,X
+0419   4733 CE 4C 9F            LDX #DIRECTIONS
+0420   4736 3A                  ABX
+0421   4737 A6 00               LDAA 0,X              ; directions 5/6 = +17/+15
+0422   4739 F6 4E 00            LDAB SIDE
+0423   473C 27 01               BEQ GP_CAP_WHITE
+0424   473E 40                  NEGA
+0425   473F             GP_CAP_WHITE:
+0426   473F FE 4E 29            LDX FRAMEPTR
+0427   4742 AB 01               ADDA 1,X
+0428   4744 A7 02               STAA 2,X
+0429   4746 85 88               BITA #$88
+0430   4748 26 21               BNE GP_CAP_NEXT
+0431   474A 16                  TAB
+0432   474B CE 4E 5B            LDX #BOARD
+0433   474E 3A                  ABX
+0434   474F A6 00               LDAA 0,X
+0435   4751 27 18               BEQ GP_CAP_NEXT
+0436   4753 16                  TAB
+0437   4754 84 08               ANDA #8
+0438   4756 B1 4E 00            CMPA SIDE
+0439   4759 27 10               BEQ GP_CAP_NEXT
+0440   475B 17                  TBA
+0441   475C 84 07               ANDA #7
+0442   475E 81 06               CMPA #6
+0443   4760 27 09               BEQ GP_CAP_NEXT
+0444   4762 BD 47 77            JSR TRY
+0445   4765 BD 46 C1            JSR STOP_EARLY
+0446   4768 4D                  TSTA
+0447   4769 26 0B               BNE GP_EXIT
+0448   476B             GP_CAP_NEXT:
+0449   476B FE 4E 29            LDX FRAMEPTR
+0450   476E 6C 05               INC 5,X
+0451   4770 A6 05               LDAA 5,X
+0452   4772 81 07               CMPA #7
+0453   4774 26 B8               BNE GP_CAP_LOOP
+0454   4776             GP_EXIT:
+0455   4776 39                  RTS
+0456   4777             
+0457   4777 B6 4E 01    TRY:    LDAA MODE
+0458   477A 81 04               CMPA #4
+0459   477C 26 03               BNE T_NORMAL
+0460   477E 7E 49 AB            JMP COUNT_MOVE
+0461   4781             T_NORMAL:
+0462   4781 FE 4E 29            LDX FRAMEPTR
+0463   4784 B6 4E 01            LDAA MODE
+0464   4787 81 01               CMPA #1
+0465   4789 26 0A               BNE T_MATCH
+0466   478B A6 02               LDAA 2,X
+0467   478D B1 4E 09            CMPA WANTTO
+0468   4790 27 03               BEQ LONG_4
+0469   4792 7E 48 2D            JMP T_EXIT
+0470   4795             LONG_4:
+0471   4795             T_MATCH:
+0472   4795 B6 4E 01            LDAA MODE
+0473   4798 26 11               BNE T_MAKE
+0474   479A A6 0B               LDAA 11,X
+0475   479C 26 0D               BNE T_MAKE
+0476   479E E6 02               LDAB 2,X
+0477   47A0 CE 4E 5B            LDX #BOARD
+0478   47A3 3A                  ABX
+0479   47A4 A6 00               LDAA 0,X
+0480   47A6 26 03               BNE LONG_5
+0481   47A8 7E 48 2D            JMP T_EXIT
+0482   47AB             LONG_5:
+0483   47AB             T_MAKE:
+0484   47AB BD 48 46            JSR MAKE
+0485   47AE BD 48 CE            JSR CHECK
+0486   47B1 4D                  TSTA
+0487   47B2 26 76               BNE T_UNDO
+0488   47B4 FE 4E 29            LDX FRAMEPTR
+0489   47B7 86 01               LDAA #1
+0490   47B9 A7 0A               STAA 10,X
+0491   47BB             LEGAL_FOUND:
+0492   47BB B6 4E 01            LDAA MODE
+0493   47BE 26 6A               BNE T_UNDO
+0494   47C0 A6 0B               LDAA 11,X
+0495   47C2 4D                  TSTA
+0496   47C3 27 08               BEQ T_STATIC
+0497   47C5 81 01               CMPA #1
+0498   47C7 26 09               BNE T_CHILD
+0499   47C9 E6 04               LDAB 4,X
+0500   47CB 26 05               BNE T_CHILD           ; answer a reply capture with one more capture ply
+0501   47CD             T_STATIC:
+0502   47CD BD 4A 01            JSR EVALUATE
+0503   47D0 20 30               BRA T_SCORE
+0504   47D2             T_CHILD:
+0505   47D2 4A                  DECA
+0506   47D3 36                  PSHA
+0507   47D4 FC 4E 29            LDD FRAMEPTR
+0508   47D7 C3 00 10            ADDD #16
+0509   47DA FD 4E 29            STD FRAMEPTR
+0510   47DD FE 4E 29            LDX FRAMEPTR
+0511   47E0 32                  PULA
+0512   47E1 A7 0B               STAA 11,X
+0513   47E3 B6 4E 00            LDAA SIDE
+0514   47E6 88 08               EORA #8
+0515   47E8 B7 4E 00            STAA SIDE
+0516   47EB BD 48 2E            JSR SEARCH
+0517   47EE 36                  PSHA
+0518   47EF B6 4E 00            LDAA SIDE
+0519   47F2 88 08               EORA #8
+0520   47F4 B7 4E 00            STAA SIDE
+0521   47F7 FC 4E 29            LDD FRAMEPTR
+0522   47FA 83 00 10            SUBD #16
+0523   47FD FD 4E 29            STD FRAMEPTR
+0524   4800 32                  PULA
+0525   4801 40                  NEGA
+0526   4802             T_SCORE:
+0527   4802 FE 4E 29            LDX FRAMEPTR
+0528   4805 8C 4E 2B            CPX #FRAMES
+0529   4808 26 12               BNE T_COMPARE
+0530   480A 81 73               CMPA #115
+0531   480C 2C 0E               BGE T_COMPARE
+0532   480E 81 8D               CMPA #$8D             ; -115: leave mate scores untouched
+0533   4810 2F 0A               BLE T_COMPARE
+0534   4812 BD 4A 49            JSR STRATEGY
+0535   4815 36                  PSHA
+0536   4816 BD 4A B3            JSR BONUS
+0537   4819 16                  TAB
+0538   481A 32                  PULA
+0539   481B 1B                  ABA
+0540   481C             T_COMPARE:
+0541   481C A1 09               CMPA 9,X
+0542   481E 2F 0A               BLE T_UNDO
+0543   4820 A7 09               STAA 9,X
+0544   4822 A6 01               LDAA 1,X
+0545   4824 A7 0D               STAA 13,X
+0546   4826 A6 02               LDAA 2,X
+0547   4828 A7 0E               STAA 14,X
+0548   482A BD 48 9C    T_UNDO: JSR UNMAKE
+0549   482D 39          T_EXIT: RTS
+0550   482E BD 45 B3    SEARCH: JSR GEN
+0551   4831 FE 4E 29            LDX FRAMEPTR
+0552   4834 A6 0A               LDAA 10,X
+0553   4836 27 03               BEQ S_NONE
+0554   4838 A6 09               LDAA 9,X
+0555   483A 39                  RTS
+0556   483B BD 48 CE    S_NONE: JSR CHECK
+0557   483E 4D                  TSTA
+0558   483F 27 03               BEQ S_DRAW
+0559   4841 86 88               LDAA #$88              ; -120: checkmate
+0560   4843 39                  RTS
+0561   4844 4F          S_DRAW: CLRA
+0562   4845 39                  RTS
+0563   4846             
+0564   4846 FE 4E 29    MAKE:   LDX FRAMEPTR
+0565   4849 E6 02               LDAB 2,X
+0566   484B CE 4E 5B            LDX #BOARD
+0567   484E 3A                  ABX
+0568   484F A6 00               LDAA 0,X
+0569   4851 FE 4E 29            LDX FRAMEPTR
+0570   4854 A7 04               STAA 4,X
+0571   4856 E6 01               LDAB 1,X
+0572   4858 CE 4E 5B            LDX #BOARD
+0573   485B 3A                  ABX
+0574   485C 6F 00               CLR 0,X
+0575   485E FE 4E 29            LDX FRAMEPTR
+0576   4861 E6 02               LDAB 2,X
+0577   4863 A6 03               LDAA 3,X
+0578   4865 36                  PSHA
+0579   4866 84 07               ANDA #7
+0580   4868 81 01               CMPA #1
+0581   486A 26 11               BNE M_NORMAL
+0582   486C A6 02               LDAA 2,X
+0583   486E 84 70               ANDA #$70
+0584   4870 27 04               BEQ M_PROMOTE
+0585   4872 81 70               CMPA #$70
+0586   4874 26 07               BNE M_NORMAL
+0587   4876             M_PROMOTE:
+0588   4876 32                  PULA
+0589   4877 84 08               ANDA #8
+0590   4879 8A 05               ORAA #5
+0591   487B 20 01               BRA M_PUT
+0592   487D             M_NORMAL:
+0593   487D 32                  PULA
+0594   487E CE 4E 5B    M_PUT:  LDX #BOARD
+0595   4881 3A                  ABX
+0596   4882 A7 00               STAA 0,X
+0597   4884 FE 4E 29            LDX FRAMEPTR
+0598   4887 A6 00               LDAA 0,X
+0599   4889 81 06               CMPA #6
+0600   488B 26 0E               BNE M_DONE
+0601   488D A6 02               LDAA 2,X
+0602   488F F6 4E 00            LDAB SIDE
+0603   4892 27 04               BEQ M_WHITE
+0604   4894 B7 4E 0E            STAA KINGB
+0605   4897 39                  RTS
+0606   4898             M_WHITE:
+0607   4898 B7 4E 0D            STAA KINGW
+0608   489B 39          M_DONE: RTS
+0609   489C FE 4E 29    UNMAKE: LDX FRAMEPTR
+0610   489F E6 02               LDAB 2,X
+0611   48A1 A6 04               LDAA 4,X
+0612   48A3 CE 4E 5B            LDX #BOARD
+0613   48A6 3A                  ABX
+0614   48A7 A7 00               STAA 0,X
+0615   48A9 FE 4E 29            LDX FRAMEPTR
+0616   48AC E6 01               LDAB 1,X
+0617   48AE A6 03               LDAA 3,X
+0618   48B0 CE 4E 5B            LDX #BOARD
+0619   48B3 3A                  ABX
+0620   48B4 A7 00               STAA 0,X
+0621   48B6 FE 4E 29            LDX FRAMEPTR
+0622   48B9 A6 00               LDAA 0,X
+0623   48BB 81 06               CMPA #6
+0624   48BD 26 0E               BNE U_DONE
+0625   48BF A6 01               LDAA 1,X
+0626   48C1 F6 4E 00            LDAB SIDE
+0627   48C4 27 04               BEQ U_WHITE
+0628   48C6 B7 4E 0E            STAA KINGB
+0629   48C9 39                  RTS
+0630   48CA             U_WHITE:
+0631   48CA B7 4E 0D            STAA KINGW
+0632   48CD 39          U_DONE: RTS
+0633   48CE             
+0634   48CE             ; Return 1 iff SIDE's king is attacked. No trial move generation is needed.
+0635   48CE B6 4E 00    CHECK:  LDAA SIDE
+0636   48D1 88 08               EORA #8
+0637   48D3 B7 4E 0F            STAA ENEMY
+0638   48D6 B6 4E 0D            LDAA KINGW
+0639   48D9 F6 4E 00            LDAB SIDE
+0640   48DC 27 03               BEQ K_START
+0641   48DE B6 4E 0E            LDAA KINGB
+0642   48E1             K_START:
+0643   48E1 B7 4E 10            STAA KINGSQ
+0644   48E4 86 0F               LDAA #15
+0645   48E6 F6 4E 00            LDAB SIDE
+0646   48E9 27 01               BEQ K_PAWN
+0647   48EB 40                  NEGA
+0648   48EC BB 4E 10    K_PAWN: ADDA KINGSQ
+0649   48EF BD 49 9D            JSR K_GET
+0650   48F2 F6 4E 0F            LDAB ENEMY
+0651   48F5 CA 01               ORAB #1
+0652   48F7 11                  CBA
+0653   48F8 26 03               BNE LONG_2
+0654   48FA 7E 49 9A            JMP K_YES
+0655   48FD             LONG_2:
+0656   48FD 86 11               LDAA #17
+0657   48FF F6 4E 00            LDAB SIDE
+0658   4902 27 01               BEQ K_PAWN2
+0659   4904 40                  NEGA
+0660   4905             K_PAWN2:
+0661   4905 BB 4E 10            ADDA KINGSQ
+0662   4908 BD 49 9D            JSR K_GET
+0663   490B F6 4E 0F            LDAB ENEMY
+0664   490E CA 01               ORAB #1
+0665   4910 11                  CBA
+0666   4911 26 03               BNE LONG_3
+0667   4913 7E 49 9A            JMP K_YES
+0668   4916             LONG_3:
+0669   4916 7F 4E 11            CLR KDIR
+0670   4919             K_KNIGHT:
+0671   4919 F6 4E 11            LDAB KDIR
+0672   491C CE 4C A7            LDX #KNIGHTDIRS
+0673   491F 3A                  ABX
+0674   4920 A6 00               LDAA 0,X
+0675   4922 BB 4E 10            ADDA KINGSQ
+0676   4925 BD 49 9D            JSR K_GET
+0677   4928 F6 4E 0F            LDAB ENEMY
+0678   492B CA 02               ORAB #2
+0679   492D 11                  CBA
+0680   492E 27 6A               BEQ K_YES
+0681   4930 7C 4E 11            INC KDIR
+0682   4933 B6 4E 11            LDAA KDIR
+0683   4936 81 08               CMPA #8
+0684   4938 26 DF               BNE K_KNIGHT
+0685   493A 7F 4E 11            CLR KDIR
+0686   493D B6 4E 10    K_RAY:  LDAA KINGSQ
+0687   4940 B7 4E 12            STAA KTO
+0688   4943 7F 4E 13            CLR KSTEP
+0689   4946             K_ALONG:
+0690   4946 F6 4E 11            LDAB KDIR
+0691   4949 CE 4C 9F            LDX #DIRECTIONS
+0692   494C 3A                  ABX
+0693   494D A6 00               LDAA 0,X
+0694   494F BB 4E 12            ADDA KTO
+0695   4952 B7 4E 12            STAA KTO
+0696   4955 85 88               BITA #$88
+0697   4957 26 35               BNE K_NEXT
+0698   4959 7C 4E 13            INC KSTEP
+0699   495C BD 49 9D            JSR K_GET
+0700   495F 27 E5               BEQ K_ALONG
+0701   4961 16                  TAB
+0702   4962 84 08               ANDA #8
+0703   4964 B1 4E 0F            CMPA ENEMY
+0704   4967 26 25               BNE K_NEXT
+0705   4969 17                  TBA
+0706   496A 84 07               ANDA #7
+0707   496C 81 05               CMPA #5
+0708   496E 27 2A               BEQ K_YES
+0709   4970 81 06               CMPA #6
+0710   4972 26 09               BNE K_NOTKING
+0711   4974 F6 4E 13            LDAB KSTEP
+0712   4977 C1 01               CMPB #1
+0713   4979 27 1F               BEQ K_YES
+0714   497B 20 11               BRA K_NEXT
+0715   497D             K_NOTKING:
+0716   497D F6 4E 11            LDAB KDIR
+0717   4980 C1 04               CMPB #4
+0718   4982 24 06               BCC K_DIAG
+0719   4984 81 04               CMPA #4
+0720   4986 27 12               BEQ K_YES
+0721   4988 20 04               BRA K_NEXT
+0722   498A 81 03       K_DIAG: CMPA #3
+0723   498C 27 0C               BEQ K_YES
+0724   498E 7C 4E 11    K_NEXT: INC KDIR
+0725   4991 B6 4E 11            LDAA KDIR
+0726   4994 81 08               CMPA #8
+0727   4996 26 A5               BNE K_RAY
+0728   4998 4F                  CLRA
+0729   4999 39                  RTS
+0730   499A 86 01       K_YES:  LDAA #1
+0731   499C 39                  RTS
+0732   499D 85 88       K_GET:  BITA #$88
+0733   499F 26 08               BNE KG_OFF
+0734   49A1 16                  TAB
+0735   49A2 CE 4E 5B            LDX #BOARD
+0736   49A5 3A                  ABX
+0737   49A6 A6 00               LDAA 0,X
+0738   49A8 39                  RTS
+0739   49A9 4F          KG_OFF: CLRA
+0740   49AA 39                  RTS
+0741   49AB             
+0742   49AB             COUNT_MOVE:
+0743   49AB 7C 4E 19            INC MOBILITY
+0744   49AE FE 4E 29            LDX FRAMEPTR
+0745   49B1 A6 00               LDAA 0,X
+0746   49B3 81 05               CMPA #5
+0747   49B5 26 03               BNE CM_CAP
+0748   49B7 7C 4E 19            INC MOBILITY
+0749   49BA E6 02       CM_CAP: LDAB 2,X
+0750   49BC CE 4E 5B            LDX #BOARD
+0751   49BF 3A                  ABX
+0752   49C0 A6 00               LDAA 0,X
+0753   49C2 84 07               ANDA #7
+0754   49C4 16                  TAB
+0755   49C5 CE 4C AF            LDX #VALUES
+0756   49C8 3A                  ABX
+0757   49C9 A6 00               LDAA 0,X
+0758   49CB B1 4E 1B            CMPA MAXCAP
+0759   49CE 23 03               BLS CM_SUM
+0760   49D0 B7 4E 1B            STAA MAXCAP
+0761   49D3 BB 4E 1A    CM_SUM: ADDA CAPSUM
+0762   49D6 B7 4E 1A            STAA CAPSUM
+0763   49D9 39                  RTS
+0764   49DA             
+0765   49DA             ; Original quarter-weight mobility/capture sum and half-weight max capture.
+0766   49DA             ; Eight-bit counters wrap like JANUS. Search combines these differences with
+0767   49DA             ; original material values, rather than reproducing STRATGY's carry chain.
+0768   49DA             STATISTICS:
+0769   49DA 7F 4E 19            CLR MOBILITY
+0770   49DD 7F 4E 1A            CLR CAPSUM
+0771   49E0 7F 4E 1B            CLR MAXCAP
+0772   49E3 BD 45 B3            JSR GEN
+0773   49E6 B6 4E 19            LDAA MOBILITY
+0774   49E9 44                  LSRA
+0775   49EA 44                  LSRA
+0776   49EB B7 4E 1C            STAA STATVALUE
+0777   49EE B6 4E 1A            LDAA CAPSUM
+0778   49F1 44                  LSRA
+0779   49F2 44                  LSRA
+0780   49F3 BB 4E 1C            ADDA STATVALUE
+0781   49F6 B7 4E 1C            STAA STATVALUE
+0782   49F9 B6 4E 1B            LDAA MAXCAP
+0783   49FC 44                  LSRA
+0784   49FD BB 4E 1C            ADDA STATVALUE
+0785   4A00 39                  RTS
+0786   4A01             
+0787   4A01             EVALUATE:
+0788   4A01 7F 4E 1E            CLR EVSCORE
+0789   4A04 7F 4E 1F            CLR EVSQ
+0790   4A07 F6 4E 1F    E_LOOP: LDAB EVSQ
+0791   4A0A CE 4E 5B            LDX #BOARD
+0792   4A0D 3A                  ABX
+0793   4A0E A6 00               LDAA 0,X
+0794   4A10 27 1A               BEQ E_NEXT
+0795   4A12 B7 4E 20            STAA EVPIECE
+0796   4A15 84 07               ANDA #7
+0797   4A17 16                  TAB
+0798   4A18 CE 4C AF            LDX #VALUES
+0799   4A1B 3A                  ABX
+0800   4A1C A6 00               LDAA 0,X
+0801   4A1E F6 4E 20            LDAB EVPIECE
+0802   4A21 C5 08               BITB #8
+0803   4A23 27 01               BEQ E_ADD
+0804   4A25 40                  NEGA
+0805   4A26 BB 4E 1E    E_ADD:  ADDA EVSCORE
+0806   4A29 B7 4E 1E            STAA EVSCORE
+0807   4A2C 7C 4E 1F    E_NEXT: INC EVSQ
+0808   4A2F B6 4E 1F            LDAA EVSQ
+0809   4A32 85 08               BITA #8
+0810   4A34 27 05               BEQ E_RANK
+0811   4A36 8B 08               ADDA #8
+0812   4A38 B7 4E 1F            STAA EVSQ
+0813   4A3B 85 80       E_RANK: BITA #$80
+0814   4A3D 27 C8               BEQ E_LOOP
+0815   4A3F B6 4E 1E            LDAA EVSCORE
+0816   4A42 F6 4E 00            LDAB SIDE
+0817   4A45 27 01               BEQ E_DONE
+0818   4A47 40                  NEGA
+0819   4A48 39          E_DONE: RTS
+0820   4A49             
+0821   4A49             ; STRATGY-style static features at each root candidate, not every reply.
+0822   4A49             ; A carries the material-search score, in the candidate mover's perspective.
+0823   4A49             STRATEGY:
+0824   4A49 16                  TAB
+0825   4A4A 4F                  CLRA
+0826   4A4B 5D                  TSTB
+0827   4A4C 2A 01               BPL E_SAVE
+0828   4A4E 43                  COMA
+0829   4A4F FD 4E 17    E_SAVE: STD EVALTOTAL
+0830   4A52 FC 4E 29            LDD FRAMEPTR
+0831   4A55 C3 00 10            ADDD #16
+0832   4A58 FD 4E 29            STD FRAMEPTR
+0833   4A5B 86 04               LDAA #4
+0834   4A5D B7 4E 01            STAA MODE
+0835   4A60 BD 49 DA            JSR STATISTICS
+0836   4A63 B7 4E 1D            STAA OWNSTAT
+0837   4A66 B6 4E 00            LDAA SIDE
+0838   4A69 88 08               EORA #8
+0839   4A6B B7 4E 00            STAA SIDE
+0840   4A6E BD 49 DA            JSR STATISTICS
+0841   4A71 16                  TAB
+0842   4A72 4F                  CLRA
+0843   4A73 FD 4E 15            STD OPPSTAT
+0844   4A76 F6 4E 1D            LDAB OWNSTAT
+0845   4A79 4F                  CLRA
+0846   4A7A B3 4E 15            SUBD OPPSTAT
+0847   4A7D             E_TOTAL:
+0848   4A7D F3 4E 17            ADDD EVALTOTAL
+0849   4A80 FD 4E 17            STD EVALTOTAL
+0850   4A83 B6 4E 00            LDAA SIDE
+0851   4A86 88 08               EORA #8
+0852   4A88 B7 4E 00            STAA SIDE
+0853   4A8B 7F 4E 01            CLR MODE
+0854   4A8E FC 4E 29            LDD FRAMEPTR
+0855   4A91 83 00 10            SUBD #16
+0856   4A94 FD 4E 29            STD FRAMEPTR
+0857   4A97 FC 4E 17            LDD EVALTOTAL
+0858   4A9A 4D                  TSTA
+0859   4A9B 2B 09               BMI E_NEGATIVE
+0860   4A9D 26 04               BNE E_HIGH
+0861   4A9F C1 73               CMPB #115
+0862   4AA1 23 0E               BLS E_RETURN
+0863   4AA3 86 73       E_HIGH: LDAA #115
+0864   4AA5 39                  RTS
+0865   4AA6             E_NEGATIVE:
+0866   4AA6 81 FF               CMPA #$FF
+0867   4AA8 26 04               BNE E_LOW
+0868   4AAA C1 8D               CMPB #$8D
+0869   4AAC 24 03               BCC E_RETURN
+0870   4AAE 86 8D       E_LOW:  LDAA #$8D
+0871   4AB0 39                  RTS
+0872   4AB1             E_RETURN:
+0873   4AB1 17                  TBA
+0874   4AB2 39                  RTS
+0875   4AB3              ; Jennings bonus: own-relative squares $33/$34/$22/$25, or
+0876   4AB3             ; a non-king leaving the back rank. Mirror files for his king-on-$03 layout.
+0877   4AB3 FE 4E 29    BONUS:  LDX FRAMEPTR
+0878   4AB6 A6 02               LDAA 2,X
+0879   4AB8 F6 4E 00            LDAB SIDE
+0880   4ABB 27 02               BEQ B_WHITE
+0881   4ABD 88 77               EORA #$77
+0882   4ABF             B_WHITE:
+0883   4ABF 88 07               EORA #7
+0884   4AC1 81 33               CMPA #$33
+0885   4AC3 27 20               BEQ B_YES
+0886   4AC5 81 34               CMPA #$34
+0887   4AC7 27 1C               BEQ B_YES
+0888   4AC9 81 22               CMPA #$22
+0889   4ACB 27 18               BEQ B_YES
+0890   4ACD 81 25               CMPA #$25
+0891   4ACF 27 14               BEQ B_YES
+0892   4AD1 A6 00               LDAA 0,X
+0893   4AD3 81 06               CMPA #6
+0894   4AD5 27 11               BEQ B_NO
+0895   4AD7 A6 01               LDAA 1,X
+0896   4AD9 84 70               ANDA #$70
+0897   4ADB F6 4E 00            LDAB SIDE
+0898   4ADE 27 02               BEQ B_RANK
+0899   4AE0 88 70               EORA #$70
+0900   4AE2 4D          B_RANK: TSTA
+0901   4AE3 26 03               BNE B_NO
+0902   4AE5 86 02       B_YES:  LDAA #2
+0903   4AE7 39                  RTS
+0904   4AE8 4F          B_NO:   CLRA
+0905   4AE9 39                  RTS
+0906   4AEA             
+0907   4AEA CE 40 00    DRAW:   LDX #$4000
+0908   4AED 86 60               LDAA #$60
+0909   4AEF             D_CLEAR:
+0910   4AEF A7 00               STAA 0,X
+0911   4AF1 08                  INX
+0912   4AF2 8C 42 00            CPX #$4200
+0913   4AF5 26 F8               BNE D_CLEAR
+0914   4AF7 CE 40 00            LDX #$4000
+0915   4AFA FF 4E 25            STX SCREENPTR
+0916   4AFD CE 4C BD            LDX #TITLE
+0917   4B00 BD 4C 61            JSR TEXT
+0918   4B03 B6 4D FF            LDAA LEVEL
+0919   4B06 8A 70               ORAA #$70
+0920   4B08 B7 40 20            STAA $4020
+0921   4B0B CE 40 22            LDX #$4022
+0922   4B0E FF 4E 25            STX SCREENPTR
+0923   4B11 CE 4C D3            LDX #SUBTITLE
+0924   4B14 BD 4C 61            JSR TEXT
+0925   4B17 CE 40 40            LDX #$4040
+0926   4B1A FF 4E 25            STX SCREENPTR
+0927   4B1D CE 4C E8            LDX #FILES
+0928   4B20 BD 4C 61            JSR TEXT
+0929   4B23 7F 4E 22            CLR UIROW
+0930   4B26 7F 4E 23    D_ROW:  CLR UICOL
+0931   4B29 B6 4E 22            LDAA UIROW
+0932   4B2C C6 20               LDAB #32
+0933   4B2E 3D                  MUL
+0934   4B2F C3 40 60            ADDD #$4060
+0935   4B32 FD 4E 25            STD SCREENPTR
+0936   4B35 86 38               LDAA #$38
+0937   4B37 B0 4E 22            SUBA UIROW
+0938   4B3A 8A 40               ORAA #$40
+0939   4B3C FE 4E 25            LDX SCREENPTR
+0940   4B3F A7 00               STAA 0,X
+0941   4B41 C6 04               LDAB #4
+0942   4B43 3A                  ABX
+0943   4B44 FF 4E 25            STX SCREENPTR
+0944   4B47 B6 4E 22    D_COL:  LDAA UIROW
+0945   4B4A B8 4E 23            EORA UICOL
+0946   4B4D 84 01               ANDA #1
+0947   4B4F 27 04               BEQ D_LIGHT
+0948   4B51 86 20               LDAA #$20
+0949   4B53 20 02               BRA D_EMPTY
+0950   4B55             D_LIGHT:
+0951   4B55 86 60               LDAA #$60
+0952   4B57             D_EMPTY:
+0953   4B57 B7 4E 24            STAA SQUAREBG
+0954   4B5A 86 07               LDAA #7
+0955   4B5C B0 4E 22            SUBA UIROW
+0956   4B5F 48                  ASLA
+0957   4B60 48                  ASLA
+0958   4B61 48                  ASLA
+0959   4B62 48                  ASLA
+0960   4B63 BA 4E 23            ORAA UICOL
+0961   4B66 16                  TAB
+0962   4B67 CE 4E 5B            LDX #BOARD
+0963   4B6A 3A                  ABX
+0964   4B6B A6 00               LDAA 0,X
+0965   4B6D 27 17               BEQ D_SPACE
+0966   4B6F B7 4E 21            STAA UITMP
+0967   4B72 84 07               ANDA #7
+0968   4B74 16                  TAB
+0969   4B75 CE 4C B6            LDX #PIECECHARS
+0970   4B78 3A                  ABX
+0971   4B79 A6 00               LDAA 0,X
+0972   4B7B F6 4E 21            LDAB UITMP
+0973   4B7E C5 08               BITB #8
+0974   4B80 27 07               BEQ D_PUT
+0975   4B82 84 3F               ANDA #$3F
+0976   4B84 20 03               BRA D_PUT
+0977   4B86             D_SPACE:
+0978   4B86 B6 4E 24            LDAA SQUAREBG
+0979   4B89 FE 4E 25    D_PUT:  LDX SCREENPTR
+0980   4B8C A7 00               STAA 0,X
+0981   4B8E B6 4E 24            LDAA SQUAREBG
+0982   4B91 A7 01               STAA 1,X
+0983   4B93 08                  INX
+0984   4B94 08                  INX
+0985   4B95 FF 4E 25            STX SCREENPTR
+0986   4B98 7C 4E 23            INC UICOL
+0987   4B9B B6 4E 23            LDAA UICOL
+0988   4B9E 81 08               CMPA #8
+0989   4BA0 26 A5               BNE D_COL
+0990   4BA2 7C 4E 22            INC UIROW
+0991   4BA5 B6 4E 22            LDAA UIROW
+0992   4BA8 81 08               CMPA #8
+0993   4BAA 27 03               BEQ D_ROWS_DONE
+0994   4BAC 7E 4B 26            JMP D_ROW
+0995   4BAF             D_ROWS_DONE:
+0996   4BAF CE 41 60            LDX #$4160
+0997   4BB2 FF 4E 25            STX SCREENPTR
+0998   4BB5 CE 4C E8            LDX #FILES
+0999   4BB8 BD 4C 61            JSR TEXT
+1000   4BBB CE 41 80            LDX #$4180
+1001   4BBE FF 4E 25            STX SCREENPTR
+1002   4BC1 CE 4C FC            LDX #HELP
+1003   4BC4 BD 4C 61            JSR TEXT
+1004   4BC7 CE 4D 15            LDX #MSG_READY
+1005   4BCA B6 4E 07            LDAA GAMEOVER
+1006   4BCD 27 11               BEQ D_STATUS
+1007   4BCF CE 4D 62            LDX #MSG_WIN
+1008   4BD2 81 01               CMPA #1
+1009   4BD4 27 0A               BEQ D_STATUS
+1010   4BD6 CE 4D 7D            LDX #MSG_LOSE
+1011   4BD9 81 02               CMPA #2
+1012   4BDB 27 03               BEQ D_STATUS
+1013   4BDD CE 4D 9B            LDX #MSG_DRAW
+1014   4BE0             D_STATUS:
+1015   4BE0 BD 4C 04            JSR MESSAGE
+1016   4BE3 BD 4C 1F            JSR DRAW_INPUT
+1017   4BE6 B6 4E 0A            LDAA HASLAST
+1018   4BE9 27 18               BEQ D_DONE
+1019   4BEB CE 41 E0            LDX #$41E0
+1020   4BEE FF 4E 25            STX SCREENPTR
+1021   4BF1 CE 4D BA            LDX #LASTLABEL
+1022   4BF4 BD 4C 61            JSR TEXT
+1023   4BF7 B6 4E 0B            LDAA LASTFROM
+1024   4BFA BD 4C 7D            JSR PRINT_SQUARE
+1025   4BFD B6 4E 0C            LDAA LASTTO
+1026   4C00 BD 4C 7D            JSR PRINT_SQUARE
+1027   4C03 39          D_DONE: RTS
+1028   4C04             MESSAGE:
+1029   4C04 FF 4E 27            STX TEXTSOURCE
+1030   4C07 CE 41 A0            LDX #$41A0
+1031   4C0A C6 20               LDAB #32
+1032   4C0C 86 60               LDAA #$60
+1033   4C0E             MSG_CLR:
+1034   4C0E A7 00               STAA 0,X
+1035   4C10 08                  INX
+1036   4C11 5A                  DECB
+1037   4C12 26 FA               BNE MSG_CLR
+1038   4C14 CE 41 A0            LDX #$41A0
+1039   4C17 FF 4E 25            STX SCREENPTR
+1040   4C1A FE 4E 27            LDX TEXTSOURCE
+1041   4C1D 20 42               BRA TEXT
+1042   4C1F             DRAW_INPUT:
+1043   4C1F CE 41 C0            LDX #$41C0
+1044   4C22 FF 4E 25            STX SCREENPTR
+1045   4C25 CE 4D B3            LDX #PROMPT
+1046   4C28 BD 4C 61            JSR TEXT
+1047   4C2B CE 41 C6            LDX #$41C6
+1048   4C2E C6 04               LDAB #4
+1049   4C30 86 60               LDAA #$60
+1050   4C32 A7 00       DI_CLR: STAA 0,X
+1051   4C34 08                  INX
+1052   4C35 5A                  DECB
+1053   4C36 26 FA               BNE DI_CLR
+1054   4C38 CE 4E 03            LDX #INPUTBUF
+1055   4C3B FF 4E 27            STX TEXTSOURCE
+1056   4C3E CE 41 C6            LDX #$41C6
+1057   4C41 FF 4E 25            STX SCREENPTR
+1058   4C44 F6 4E 02            LDAB INPUTLEN
+1059   4C47 27 17               BEQ DI_DONE
+1060   4C49             DI_COPY:
+1061   4C49 FE 4E 27            LDX TEXTSOURCE
+1062   4C4C A6 00               LDAA 0,X
+1063   4C4E 8A 40               ORAA #$40
+1064   4C50 08                  INX
+1065   4C51 FF 4E 27            STX TEXTSOURCE
+1066   4C54 FE 4E 25            LDX SCREENPTR
+1067   4C57 A7 00               STAA 0,X
+1068   4C59 08                  INX
+1069   4C5A FF 4E 25            STX SCREENPTR
+1070   4C5D 5A                  DECB
+1071   4C5E 26 E9               BNE DI_COPY
+1072   4C60             DI_DONE:
+1073   4C60 39                  RTS
+1074   4C61 FF 4E 27    TEXT:   STX TEXTSOURCE
+1075   4C64             TX_LOOP:
+1076   4C64 FE 4E 27            LDX TEXTSOURCE
+1077   4C67 A6 00               LDAA 0,X
+1078   4C69 27 11               BEQ TX_DONE
+1079   4C6B 08                  INX
+1080   4C6C FF 4E 27            STX TEXTSOURCE
+1081   4C6F 8A 40               ORAA #$40
+1082   4C71 FE 4E 25            LDX SCREENPTR
+1083   4C74 A7 00               STAA 0,X
+1084   4C76 08                  INX
+1085   4C77 FF 4E 25            STX SCREENPTR
+1086   4C7A 20 E8               BRA TX_LOOP
+1087   4C7C             TX_DONE:
+1088   4C7C 39                  RTS
+1089   4C7D             PRINT_SQUARE:
+1090   4C7D 36                  PSHA
+1091   4C7E 84 07               ANDA #7
+1092   4C80 8B 41               ADDA #$41
+1093   4C82 FE 4E 25            LDX SCREENPTR
+1094   4C85 A7 00               STAA 0,X
+1095   4C87 08                  INX
+1096   4C88 32                  PULA
+1097   4C89 44                  LSRA
+1098   4C8A 44                  LSRA
+1099   4C8B 44                  LSRA
+1100   4C8C 44                  LSRA
+1101   4C8D 4C                  INCA
+1102   4C8E 8A 70               ORAA #$70
+1103   4C90 A7 00               STAA 0,X
+1104   4C92 08                  INX
+1105   4C93 FF 4E 25            STX SCREENPTR
+1106   4C96 39                  RTS
+1107   4C97             
+1108   4C97 040203050603INITIAL: .BYTE 4,2,3,5,6,3,2,4
+1108   4C9D 0204
+1109   4C9F F0FF0110EF11DIRECTIONS: .BYTE $F0,$FF,1,16,$EF,17,15,$F1
+1109   4CA5 0FF1
+1110   4CA7 DFE1EEF20E12KNIGHTDIRS: .BYTE $DF,$E1,$EE,$F2,14,18,31,33
+1110   4CAD 1F21
+1111   4CAF 00020404060AVALUES: .BYTE 0,2,4,4,6,10,0
+1111   4CB5 00
+1112   4CB6 20504E425251PIECECHARS: .TEXT " PNBRQK"
+1112   4CBC 4B
+1113   4CBD 4D4943524F43TITLE: .TEXT "MICROCHESS / JENNINGS"
+1113   4CC3 48455353202F204A454E4E494E4753
+1114   4CD2 00                  .BYTE 0
+1115   4CD3 504C59202F20SUBTITLE: .TEXT "PLY / YOU PLAY WHITE"
+1115   4CD9 594F5520504C4159205748495445
+1116   4CE7 00                  .BYTE 0
+1117   4CE8 202020204120FILES: .TEXT "    A B C D E F G H"
+1117   4CEE 42204320442045204620472048
+1118   4CFB 00                  .BYTE 0
+1119   4CFC 4E204E455720HELP: .TEXT "N NEW  Q QUIT  S 1/2 PLY"
+1119   4D02 2051205155495420205320312F3220504C59
+1120   4D14 00                  .BYTE 0
+1121   4D15 453245342045MSG_READY: .TEXT "E2E4 ENTER / BACKSPACE TO EDIT"
+1121   4D1B 4E544552202F204241434B535041434520544F2045444954
+1122   4D33 00                  .BYTE 0
+1123   4D34 424C41434B20MSG_THINK: .TEXT "BLACK IS THINKING..."
+1123   4D3A 4953205448494E4B494E472E2E2E
+1124   4D48 00                  .BYTE 0
+1125   4D49 494C4C454741MSG_BAD: .TEXT "ILLEGAL MOVE - TRY AGAIN"
+1125   4D4F 4C204D4F5645202D2054525920414741494E
+1126   4D61 00                  .BYTE 0
+1127   4D62 434845434B4DMSG_WIN: .TEXT "CHECKMATE - YOU WIN. N NEW"
+1127   4D68 415445202D20594F552057494E2E204E204E4557
+1128   4D7C 00                  .BYTE 0
+1129   4D7D 434845434B4DMSG_LOSE: .TEXT "CHECKMATE - BLACK WINS. N NEW"
+1129   4D83 415445202D20424C41434B2057494E532E204E204E4557
+1130   4D9A 00                  .BYTE 0
+1131   4D9B 5354414C454DMSG_DRAW: .TEXT "STALEMATE - DRAW. N NEW"
+1131   4DA1 415445202D20445241572E204E204E4557
+1132   4DB2 00                  .BYTE 0
+1133   4DB3 4D4F56453A20PROMPT: .TEXT "MOVE: "
+1134   4DB9 00                  .BYTE 0
+1135   4DBA 424C41434B3ALASTLABEL: .TEXT "BLACK: "
+1135   4DC0 20
+1136   4DC1 00                  .BYTE 0
+1137   4DC2 4D6963726F43COPYRIGHT: .TEXT "MicroChess (c) 1996-2002 Peter Jennings, peterj@benlo.com"
+1137   4DC8 686573732028632920313939362D32303032205065746572204A656E6E696E67732C2070657465726A4062656E6C6F2E636F6D
+1138   4DFB 00                  .BYTE 0
+1139   4DFC             CODE_END:
+1140   4DFC 00          OLDCC: .BYTE 0
+1141   4DFD 00 00       OLDSP: .WORD 0
+1142   4DFF 02          LEVEL: .BYTE 2
+1143   4E00 00          SIDE: .BYTE 0
+1144   4E01 00          MODE: .BYTE 0
+1145   4E02 00          INPUTLEN: .BYTE 0
+1146   4E03 00 00 00 00 INPUTBUF: .FILL 4,0
+1147   4E07 00          GAMEOVER: .BYTE 0
+1148   4E08 00          WANTFROM: .BYTE 0
+1149   4E09 00          WANTTO: .BYTE 0
+1150   4E0A 00          HASLAST: .BYTE 0
+1151   4E0B 00          LASTFROM: .BYTE 0
+1152   4E0C 00          LASTTO: .BYTE 0
+1153   4E0D 04          KINGW: .BYTE 4
+1154   4E0E 74          KINGB: .BYTE $74
+1155   4E0F 00          ENEMY: .BYTE 0
+1156   4E10 00          KINGSQ: .BYTE 0
+1157   4E11 00          KDIR: .BYTE 0
+1158   4E12 00          KTO: .BYTE 0
+1159   4E13 00          KSTEP: .BYTE 0
+1160   4E14 00          TESTSIDE: .BYTE 0
+1161   4E15 00 00       OPPSTAT: .WORD 0
+1162   4E17 00 00       EVALTOTAL: .WORD 0
+1163   4E19 00          MOBILITY: .BYTE 0
+1164   4E1A 00          CAPSUM: .BYTE 0
+1165   4E1B 00          MAXCAP: .BYTE 0
+1166   4E1C 00          STATVALUE: .BYTE 0
+1167   4E1D 00          OWNSTAT: .BYTE 0
+1168   4E1E 00          EVSCORE: .BYTE 0
+1169   4E1F 00          EVSQ: .BYTE 0
+1170   4E20 00          EVPIECE: .BYTE 0
+1171   4E21 00          UITMP: .BYTE 0
+1172   4E22 00          UIROW: .BYTE 0
+1173   4E23 00          UICOL: .BYTE 0
+1174   4E24 00          SQUAREBG: .BYTE 0
+1175   4E25 00 00       SCREENPTR: .WORD 0
+1176   4E27 00 00       TEXTSOURCE: .WORD 0
+1177   4E29 4E 2B       FRAMEPTR: .WORD FRAMES
+1178   4E2B 000000000000FRAMES: .FILL 48,0
+1178   4E31 000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+1179   4E5B 000000000000BOARD: .FILL 64,0
+1179   4E61 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+1180   4E9B 000000000000       .FILL 64,0
+1180   4EA1 00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+1181   4EDB             IMAGE_END:
+1182   4EDB                     .END START
+tasm: Number of errors = 0
