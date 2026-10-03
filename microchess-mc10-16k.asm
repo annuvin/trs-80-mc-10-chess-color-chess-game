@@ -78,6 +78,13 @@ CAC     .EQU $B0
 CKH     .EQU $B1
 SEARCHOK .EQU $B2
 TMPW    .EQU $B3        ; word
+; evaluation tunables (per colour) and score jitter; set by the front end
+CBW     .EQU $F5        ; castling bonus, White to move
+CEW     .EQU $F6        ; centre/development bonus, White
+CBB     .EQU $F7        ; castling bonus, Black
+CEB     .EQU $F8        ; centre/development bonus, Black
+JIT     .EQU $F9        ; random 0..JIT added to every root score (0 = off)
+RNDS    .EQU $EE        ; random state
 
 ; ---- data RAM (not part of the load image) -------------------------
 SQ      .EQU RAM+$000   ; 48 : white ids $00-$0F, black ids $20-$2F ; $CC = captured
@@ -90,7 +97,6 @@ CNTS    .EQU CAPS+5     ;      group g at CNTS+STATE : MOB,MAXC,CC,PCAP
 USTACK  .EQU RAM+$160   ; undo records, 8 bytes each (32 deep)
 MLIST   .EQU RAM+$260   ; legal move list (from,to) pairs, up to 256
 RAMEND  .EQU RAM+$460
-CBONUS  .EQU 12         ; evaluation bonus for castling
 
 BCAP0   .EQU CAPS+0
 WCAP1   .EQU CAPS+1
@@ -1106,17 +1112,23 @@ ST_R1:  CMPA #$33
         TBA
 ST_R2:  CMPA #$10
         BCC ST_CK
-ST_BON: LDAA SCORE
-        ADDA #2
-        STAA SCORE
+ST_BON: LDAA CEW
+        TST MYC
+        BEQ ST_B1
+        LDAA CEB
+ST_B1:  JSR ADDSC
 ST_CK:  LDAA MOVEN              ; castling bonus (root move flagged $40)
         CMPA #$40
-        BNE CKMATE
-        LDAA SCORE
-        ADDA #CBONUS
-        BCC ST_CB
-        LDAA #$FE
-ST_CB:  STAA SCORE
+        BNE ST_JT
+        LDAA CBW
+        TST MYC
+        BEQ ST_B2
+        LDAA CBB
+ST_B2:  JSR ADDSC
+ST_JT:  LDAA JIT
+        BEQ CKMATE
+        JSR RNDJ
+        JSR ADDSC
 CKMATE: LDAA SCORE
         LDAB BMAXC
         CMPB #$0B
@@ -1138,6 +1150,28 @@ RETV:   LDAB #4
         LDAB SQUARE
         STAB BESTM
 RETP:   RTS
+
+ADDSC:  ADDA SCORE              ; SCORE += A, clamped to $FE ($FF means mate)
+        BCS AS_C
+        CMPA #$FF
+        BNE AS_S
+AS_C:   LDAA #$FE
+AS_S:   STAA SCORE
+        RTS
+RND:    LDAA $0A                ; free-running counter low byte
+        EORA RNDS
+        ROLA
+        STAA RNDS
+        RTS
+RNDJ:   JSR RND                 ; A = random 0..JIT
+        LDAB JIT
+        INCB
+        STAB TMPC
+RJ_L:   CMPA TMPC
+        BCS RJ_R
+        SUBA TMPC
+        BRA RJ_L
+RJ_R:   RTS
 
 GO:     CLR SEARCHOK
         LDAA #$0C
@@ -1252,16 +1286,40 @@ BKR     .EQU $EA
 BKF     .EQU $EB
 BKT     .EQU $EC
 HLEN    .EQU $ED        ; plies played this game
-RNDS    .EQU $EE
 SELFF   .EQU $EF        ; 1 = hidden self-play chosen on the title screen
 SW      .EQU $F0        ; self-play tallies
 SB      .EQU $F1
 SD      .EQU $F2
 NV      .EQU $F3
 NC      .EQU $F4
-SPMAX   .EQU 200        ; self-play: games longer than this many plies are drawn
+SPMAX   .EQU 250        ; self-play: games longer than this many plies are drawn
+HI      .EQU $FA        ; scratch (hash / draw / takeback)
+HB      .EQU $FB
+HU      .EQU $FC
+HX      .EQU $B5        ; word
 
 HIST    .EQU RAM+$490   ; first four plies (from,to)
+HH0     .EQU RAM+$4A0   ; hash of the current position (4 bytes)
+HH1     .EQU RAM+$4A1
+HH2     .EQU RAM+$4A2
+HH3     .EQU RAM+$4A3
+HPOS    .EQU RAM+$4A4   ; ply index of the current position (wraps at 256)
+HCLK    .EQU RAM+$4A5   ; plies since last pawn move / capture
+PHH     .EQU RAM+$4A6   ; takeback ring write index
+PHN     .EQU RAM+$4A7   ; plies available to take back (0-16)
+PAWNF   .EQU RAM+$4A8   ; type of the piece just moved
+GAMEN   .EQU RAM+$4A9   ; self-play game counter
+SWPAR   .EQU RAM+$4AA   ; self-play: 1 = set A plays Black this game
+BOOKEN  .EQU RAM+$4AB   ; opening book enabled
+RFND    .EQU RAM+$4AC   ; repetition count
+RCNT    .EQU RAM+$4AD
+RIDX    .EQU RAM+$4AE
+HMX     .EQU RAM+$4AF
+CF      .EQU RAM+$4B0   ; self-play setup: A castle, A centre, B castle, B centre,
+SELROW  .EQU RAM+$4B7   ;                  jitter, book, swap
+HNTXT   .EQU RAM+$4C0   ; "H:E2E4",0
+HASHH   .EQU RAM+$500   ; 256 x 4-byte position hashes
+PHIST   .EQU RAM+$900   ; 16 x 8-byte undo records
 HTXT    .EQU RAM+$470   ; "U:E2E4",0
 CTXT    .EQU RAM+$478   ; "C:E7E5",0
 INTXT   .EQU RAM+$480   ; typed move echo
@@ -1283,12 +1341,14 @@ START:  SEI
         STAA $00                ; port 1 = keyboard strobe outputs
         LDAA #GFXMODE
         STAA $BFFF
+        JSR CFGINIT
 TITLE:  JSR TITLESCR
         TST SELFF
         BEQ NEWGAME
         JMP SELFPLAY
 NEWGAME: JSR NEWPOS
         CLR HLEN
+        JSR GAMEINIT
         LDAA #$FF
         STAA LASTF
         STAA LASTT
@@ -1331,10 +1391,24 @@ GL_END: STAA MSGID
 GL_WAIT: JSR GETKEY
         CMPA #$4E               ; N
         BEQ TITLE
-        CMPA #$51               ; Q
+        CMPA #$54               ; T: take back
+        BNE GL_W2
+        JSR TAKEBACK
+        TSTA
+        BEQ GL_WAIT
+        JMP GLOOP
+GL_W2:  CMPA #$51               ; Q
         BNE GL_WAIT
         JMP QUIT
-GL_HAVE: JSR INCHECK
+GL_HAVE: JSR CHKDRAW
+        TSTA
+        BEQ GL_PLAY
+        STAA MSGID
+        JSR STATUS
+        LDAA #1
+        STAA GSTATE
+        BRA GL_WAIT
+GL_PLAY: JSR INCHECK
         STAA CHKF
         LDAA MYC
         CMPA HUMAN
@@ -1363,13 +1437,20 @@ HT_M:   STAA MSGID
         CLR INLEN
         LDAA #$FF
         STAA HLF
+        JSR CLRHINT
         JSR DRAWINPUT
 HT_KEY: JSR GETKEY
         CMPA #$4E
         BEQ HT_NEW
         CMPA #$51
-        BNE HT_K2
+        BNE HT_K1
         JMP QUIT
+HT_K1:  CMPA #$54               ; T: take back
+        BNE HT_K1B
+        JMP HT_TB
+HT_K1B: CMPA #$2F               ; /: hint
+        BNE HT_K2
+        JMP HT_HINT
 HT_K2:  CMPA #27
         BEQ HT_CLR
         CMPA #8
@@ -1465,6 +1546,32 @@ HT_OK:  JSR DOMOVE
         JSR DRAWBOARD
         JSR DRAWMOVES
         JMP GLOOP
+HT_TB:  JSR TAKEBACK
+        TSTA
+        BEQ HT_TB0
+        JMP GLOOP
+HT_TB0: LDAA MSGID
+        PSHA
+        LDAA #11
+        STAA MSGID
+        JSR STATUS
+        PULA
+        STAA MSGID
+        JMP HT_KEY
+HT_HINT: LDAA MSGID
+        PSHA
+        LDAA #1
+        TST CHKF
+        BEQ HH_M
+        LDAA #7
+HH_M:   STAA MSGID
+        JSR STATUS
+        JSR CPUCALC
+        JSR HINTSHOW
+        PULA
+        STAA MSGID
+        JSR STATUS
+        JMP HT_KEY
 UNHL:   LDAA HLF
         CMPA #$FF
         BEQ UH_R
@@ -1531,12 +1638,32 @@ DM_F:   LDAA 0,X
         CMPB #16
         BNE DM_F
 DM_G:   STAB PIECE
+        ORAB MYC
+        LDX #PTYPE
+        ABX
+        LDAA 0,X
+        STAA PAWNF
         LDAA TOF
         STAA SQUARE
         CLR MOVEN
         JSR MOVE
         LDX #USTACK
         STX UPTR
+        LDAA HCLK
+        STAA USTACK+7
+        LDAA PAWNF
+        CMPA #$10
+        BEQ DM_Z
+        LDAA MCAP
+        CMPA #$FF
+        BNE DM_Z
+        LDAA HCLK
+        CMPA #255
+        BEQ DM_C
+        INC HCLK
+        BRA DM_C
+DM_Z:   CLR HCLK
+DM_C:   JSR PUSHREC
         LDAA HLEN
         CMPA #4
         BCC DM_H
@@ -1556,7 +1683,356 @@ DM_H2:  LDAA FROMF
         STAA LASTF
         LDAA TOF
         STAA LASTT
-        JMP REVERSE
+        JSR REVERSE
+        INC HPOS
+        JMP HASHPOS
+
+; ---------------------------------------------------------------------
+;  game history: position hashes (repetition), 50-move clock, undo ring
+; ---------------------------------------------------------------------
+GAMEINIT: CLR HPOS
+        CLR HCLK
+        CLR PHH
+        CLR PHN
+        LDAA #12
+        STAA CBW
+        STAA CBB
+        LDAA #2
+        STAA CEW
+        STAA CEB
+        CLR JIT
+        LDAA #1
+        STAA BOOKEN
+        JMP HASHPOS
+; HASHPOS: hash the position into HH0-3 and store it at HASHH[HPOS]
+HASHPOS: CLR HH0
+        CLR HH1
+        CLR HH2
+        CLR HH3
+        CLR HI
+HP_L:   LDAB HI
+        LDX #SQ
+        ABX
+        LDAA 0,X
+        CMPA #$CC
+        BEQ HP_N
+        STAA HB
+        LDAB HI
+        LDX #PTYPE
+        ABX
+        LDAA 0,X
+        STAA HU
+        LDAA HI
+        ANDA #$20
+        ORAA HU
+        STAA HU                 ; u = colour|type
+        LDAA HB                 ; Zobrist-style key for (square, colour|type)
+        LDAB #37
+        MUL
+        STAB HMX
+        LDAA HU
+        LDAB #91
+        MUL
+        ADDB HMX
+        ADDB #17
+        TBA
+        EORA #$A7
+        MUL
+        EORA HH0
+        STAA HH0
+        EORB HH1
+        STAB HH1
+        LDAA HB
+        LDAB #113
+        MUL
+        STAB HMX
+        LDAA HU
+        LDAB #29
+        MUL
+        EORB HMX
+        ADDB #5
+        TBA
+        EORA #$3D
+        MUL
+        EORA HH2
+        STAA HH2
+        EORB HH3
+        STAB HH3
+HP_N:   INC HI
+        LDAA HI
+        CMPA #$10
+        BNE HP_2
+        LDAA #$20
+        STAA HI
+        BRA HP_L
+HP_2:   CMPA #$30
+        BNE HP_L
+        LDAA MOVED              ; castling rights: king + rook moved flags
+        ASLA
+        ORAA MOVED+2
+        ASLA
+        ORAA MOVED+3
+        ASLA
+        ORAA MOVED+$20
+        ASLA
+        ORAA MOVED+$22
+        ASLA
+        ORAA MOVED+$23
+        EORA HH0
+        STAA HH0
+        LDAA HH1
+        EORA MYC
+        STAA HH1
+        LDAB HPOS
+        CLRA
+        ASLD
+        ASLD
+        ADDD #HASHH
+        STD TMPW
+        LDX TMPW
+        LDAA HH0
+        STAA 0,X
+        LDAA HH1
+        STAA 1,X
+        LDAA HH2
+        STAA 2,X
+        LDAA HH3
+        STAA 3,X
+        RTS
+; REPCHK: A = number of earlier equal positions with the same side to move
+REPCHK: CLR RFND
+        LDAA HPOS
+        STAA RIDX
+        LDAA HCLK
+        STAA RCNT
+RC_L:   LDAA RCNT
+        CMPA #2
+        BCS RC_R
+        SUBA #2
+        STAA RCNT
+        LDAA RIDX
+        SUBA #2
+        STAA RIDX
+        LDAB RIDX
+        CLRA
+        ASLD
+        ASLD
+        ADDD #HASHH
+        STD TMPW
+        LDX TMPW
+        LDAA 0,X
+        CMPA HH0
+        BNE RC_L
+        LDAA 1,X
+        CMPA HH1
+        BNE RC_L
+        LDAA 2,X
+        CMPA HH2
+        BNE RC_L
+        LDAA 3,X
+        CMPA HH3
+        BNE RC_L
+        INC RFND
+        BRA RC_L
+RC_R:   LDAA RFND
+        RTS
+; INSUFF: A = 1 if neither side can mate (bare kings, or one minor piece)
+INSUFF: CLR HU
+        LDAA #1
+        STAA HI
+IN_L:   LDAB HI
+        LDX #SQ
+        ABX
+        LDAA 0,X
+        CMPA #$CC
+        BEQ IN_N
+        LDAB HI
+        LDX #PTYPE
+        ABX
+        LDAA 0,X
+        CMPA #2
+        BEQ IN_M
+        CMPA #4
+        BEQ IN_M
+        BRA IN_S
+IN_M:   INC HU
+        LDAA HU
+        CMPA #2
+        BCC IN_S
+IN_N:   INC HI
+        LDAA HI
+        CMPA #$10
+        BNE IN_2
+        LDAA #$21
+        STAA HI
+        BRA IN_L
+IN_2:   CMPA #$30
+        BNE IN_L
+        LDAA #1
+        RTS
+IN_S:   CLRA
+        RTS
+; CHKDRAW: A = message id (8 repetition, 9 fifty-move, 10 material) or 0
+CHKDRAW: LDAA HCLK
+        CMPA #100
+        BCS CD_1
+        LDAA #9
+        RTS
+CD_1:   JSR REPCHK
+        CMPA #2
+        BCS CD_2
+        LDAA #8
+        RTS
+CD_2:   JSR INSUFF
+        TSTA
+        BEQ CD_R
+        LDAA #10
+CD_R:   RTS
+; PSLOT: A = ring index -> X = address of that undo record
+PSLOT:  ANDA #$0F
+        TAB
+        CLRA
+        ASLD
+        ASLD
+        ASLD
+        ADDD #PHIST
+        STD TMPW
+        LDX TMPW
+        RTS
+PUSHREC: LDAA PHH
+        JSR PSLOT
+        STX TMPW
+        LDX #USTACK
+        LDAB #8
+        JSR COPYB
+        INC PHH
+        LDAA PHN
+        CMPA #16
+        BCC PR_R
+        INC PHN
+PR_R:   RTS
+; UNDOPLY: take back the last ply (MYC = side to move now)
+UNDOPLY: JSR REVERSE
+        DEC PHH
+        DEC PHN
+        LDAA PHH
+        JSR PSLOT
+        PSHX
+        LDX #USTACK
+        STX TMPW
+        PULX
+        LDAB #8
+        JSR COPYB
+        LDAA USTACK+7
+        STAA HCLK
+        LDX #USTACK+8
+        STX UPTR
+        JSR UMOVE
+        LDX #USTACK
+        STX UPTR
+        DEC HPOS
+        LDAA HLEN
+        BEQ UP_R
+        CMPA #$FF
+        BEQ UP_R
+        DEC HLEN
+UP_R:   RTS
+; RECTXT: X = text dest, HU = 1 (newest record) or 2: show that move
+RECTXT: STX HX
+        LDAA PHH
+        SUBA HU
+        JSR PSLOT
+        LDAA 2,X
+        STAA FROMF
+        LDAA 0,X
+        STAA TOF
+        LDX HX
+        JMP SETTXT
+; REBUILD: last-move highlight and U:/C: texts from the undo ring
+REBUILD: LDX #HTXT
+        JSR INITTXT
+        LDX #CTXT
+        JSR INITTXT
+        LDAA #$43
+        STAA CTXT
+        LDAA #$FF
+        STAA LASTF
+        STAA LASTT
+        LDAA PHN
+        BEQ RB_R
+        LDAA #1
+        STAA HU
+        LDAA MYC                ; newest record was played by the other side
+        EORA #$20
+        CMPA HUMAN
+        BEQ RB_H
+        LDX #CTXT+2
+        BRA RB_1
+RB_H:   LDX #HTXT+2
+RB_1:   JSR RECTXT
+        LDAA FROMF
+        STAA LASTF
+        LDAA TOF
+        STAA LASTT
+        LDAA PHN
+        CMPA #2
+        BCS RB_R
+        LDAA #2
+        STAA HU
+        LDAA MYC
+        CMPA HUMAN
+        BEQ RB_H2
+        LDX #CTXT+2
+        BRA RB_2
+RB_H2:  LDX #HTXT+2
+RB_2:   JSR RECTXT
+RB_R:   RTS
+; TAKEBACK: undo to the human's turn. A = 1 done, 0 nothing to undo
+TAKEBACK: LDAB #2
+        LDAA MYC
+        CMPA HUMAN
+        BEQ TB_1
+        LDAB #1
+TB_1:   CMPB PHN
+        BHI TB_NO
+        STAB HU
+TB_L:   JSR UNDOPLY
+        DEC HU
+        BNE TB_L
+        JSR HASHPOS
+        JSR REBUILD
+        CLR GSTATE
+        CLR INLEN
+        LDAA #$FF
+        STAA HLF
+        JSR CLRHINT
+        JSR DRAWBOARD
+        JSR DRAWMOVES
+        JSR DRAWINPUT
+        LDAA #1
+        RTS
+TB_NO:  CLRA
+        RTS
+; hint line (row 66)
+HINTSHOW: LDAA #$48
+        STAA HNTXT
+        LDAA #$3A
+        STAA HNTXT+1
+        LDX #HNTXT+2
+        JSR SETTXT
+        CLR HNTXT+6
+        LDAA #C_RED
+        STAA FGB
+        LDAA #26
+        LDAB #66
+        LDX #HNTXT
+        JMP PRTAT
+CLRHINT: LDAA #C_RED
+        STAA FGB
+        LDAA #26
+        LDAB #66
+        LDX #T_BL6
+        JMP PRTAT
 ; X -> 4 chars, text of FROMF/TOF
 SETTXT: LDAA FROMF
         JSR SQCH
@@ -1972,7 +2448,7 @@ DSP0:   LDAA #26
         BNE DSP2
         LDX #T_HOLD
 DSP2:   LDAA #26
-        LDAB #78
+        LDAB #84
         JSR PRTAT
         LDX #T_QUIT
         LDAA HUMAN
@@ -1980,19 +2456,30 @@ DSP2:   LDAA #26
         BNE DSP3
         LDX #T_BRK
 DSP3:   LDAA #26
-        LDAB #84
+        LDAB #90
         JSR PRTAT
-        RTS
+        LDAA HUMAN
+        CMPA #$FF
+        BEQ DSP4
+        LDAA #26
+        LDAB #72
+        LDX #T_UNDO
+        JSR PRTAT
+        LDAA #26
+        LDAB #78
+        LDX #T_HINT
+        JSR PRTAT
+DSP4:   RTS
 
 DRAWMOVES:
         LDAA #C_YEL
         STAA FGB
         LDAA #26
-        LDAB #30
+        LDAB #26
         LDX #HTXT
         JSR PRTAT
         LDAA #26
-        LDAB #36
+        LDAB #32
         LDX #CTXT
         JMP PRTAT
 
@@ -2021,7 +2508,7 @@ DI_ST:  LDX #INTXT
         BNE DI_L
         CLR 1,X
         LDAA #26
-        LDAB #66
+        LDAB #60
         LDX #INTXT
         JMP PRTAT
 
@@ -2035,18 +2522,18 @@ STATUS: LDAA MSGID
         STAA FGB
         LDAA #26
         STAA TCOL
-        LDAA #48
+        LDAA #40
         STAA TROW
         LDX TPTR
         JSR PUT6
         LDAA #26
         STAA TCOL
-        LDAA #54
+        LDAA #46
         STAA TROW
         JSR PUT6
         LDAA #26
         STAA TCOL
-        LDAA #60
+        LDAA #52
         STAA TROW
         JSR PUT6
         RTS
@@ -2132,7 +2619,11 @@ TS_K:   JSR GETKEY
         CMPA #$51               ; Q
         BNE TS_K
         JMP QUIT
-TS_S:   LDAA #1
+TS_S:   JSR SELFSETUP
+        TSTA
+        BNE TS_SG
+        JMP TITLESCR
+TS_SG:  LDAA #1
         STAA SELFF
         RTS
 TS_W:   CLR HUMAN
@@ -2160,6 +2651,23 @@ T_SUB2: .strz "BASED ON PETER JENNINGS"
 T_PLAY: .strz "PLAY AS:"
 T_CHOOSE: .strz "W=WHITE  B=BLACK"
 T_QUIT2: .strz "Q = QUIT"
+T_UNDO: .strz "T=UNDO"
+T_HINT: .strz "/=HINT"
+T_BL6:  .strz "      "
+T_ON:   .strz "ON "
+T_OFF:  .strz "OFF"
+T_SST:  .strz "SELF-PLAY SETUP"
+T_SS1:  .strz "1-7 SELECT ROW"
+T_SS2:  .strz ",=DOWN  .=UP"
+T_SS3:  .strz "ENTER=GO  BREAK=BACK"
+SSLAB:  .strz "A CASTLE  "
+        .strz "A CENTRE  "
+        .strz "B CASTLE  "
+        .strz "B CENTRE  "
+        .strz "JITTER    "
+        .strz "BOOK      "
+        .strz "SWAP A/B  "
+SSMAX:  .BYTE 60,60,60,60,10,1,1
 MSGTAB: .text "YOUR  MOVE        "
         .text "THINK ING...      "
         .text "CHECK!YOUR  MOVE  "
@@ -2168,6 +2676,10 @@ MSGTAB: .text "YOUR  MOVE        "
         .text "MATE! CPU   WINS  "
         .text "STALE-MATE! DRAW  "
         .text "CHECK!THINK       "
+        .text "DRAW! REPEAT      "
+        .text "DRAW! 50 MOVE RULE"
+        .text "DRAW! NO MATERIAL "
+        .text "NO    UNDO  LEFT  "
 GMAP:   .BYTE 0,3,2,4,1,0,0,0,5,0,0,0,0,0,0,0,0
 KEYTAB: .BYTE $00,$41,$42,$43,$44,$45,$46,$47
         .BYTE $48,$49,$4A,$4B,$4C,$4D,$4E,$4F
@@ -2184,12 +2696,9 @@ ZEROS:  .fill 33
 ;  Matching entries are collected, one is chosen at random, and it is
 ;  only played if it is in the legal list.
 ; ---------------------------------------------------------------------
-RND:    LDAA $0A                ; free-running counter low byte
-        EORA RNDS
-        ROLA
-        STAA RNDS
-        RTS
-BOOKMV: LDAA HLEN
+BOOKMV: TST BOOKEN
+        BEQ BK_NO
+        LDAA HLEN
         CMPA #4
         BCC BK_NO
         CLR BKC
@@ -2300,12 +2809,14 @@ SELFPLAY: CLR SELFF
         CLR SW
         CLR SB
         CLR SD
+        CLR GAMEN
         CLR FLIP
         LDAA #$FF
         STAA HUMAN
 SP_NEW: LDAA SW                 ; vary the book choice from game to game
         ADDA SB
         ADDA SD
+        ADDA GAMEN
         LDAB #59
         MUL
         EORB RNDS
@@ -2316,6 +2827,8 @@ SP_NEW: LDAA SW                 ; vary the book choice from game to game
         STAA LASTT
         STAA HLF
         CLR HLEN
+        JSR GAMEINIT
+        JSR SPCFG
         CLR BGB
         JSR CLS
         LDX #HTXT
@@ -2336,6 +2849,9 @@ SP_LOOP: JSR LISTMOVES
         LDAA HLEN
         CMPA #SPMAX
         BCC SP_DRAW
+        JSR CHKDRAW
+        TSTA
+        BNE SP_DRAW
         JSR SCAN
         CMPA #27
         BEQ SP_STOP
@@ -2356,14 +2872,25 @@ SP_STOP: JMP TITLE
 SP_END: JSR INCHECK
         TSTA
         BEQ SP_DRAW
-        TST MYC                 ; side to move is mated
-        BEQ SP_BW
-        INC SW
-        BRA SP_NXT
-SP_BW:  INC SB
-        BRA SP_NXT
-SP_DRAW: INC SD
-SP_NXT: JSR DRAWSELF
+        LDAA MYC                ; side to move is mated: who is A?
+        LSRA
+        LSRA
+        LSRA
+        LSRA
+        LSRA                    ; 1 = White won
+        EORA SWPAR              ; 1 = set A won
+        BEQ SP_B
+        LDX #SW
+        BRA SP_INC
+SP_B:   LDX #SB
+        BRA SP_INC
+SP_DRAW: LDX #SD
+SP_INC: LDAA 0,X                ; saturating tally
+        INCA
+        BEQ SP_NXT
+        STAA 0,X
+SP_NXT: INC GAMEN
+        JSR DRAWSELF
         LDAB #6
 SP_DL:  LDX #0
 SP_DL2: DEX
@@ -2371,14 +2898,184 @@ SP_DL2: DEX
         DECB
         BNE SP_DL
         JMP SP_NEW
+; SPCFG: apply the setup screen's parameters for this game
+SPCFG:  LDAA GAMEN
+        ANDA #1
+        TST CF+6
+        BNE SC_1
+        CLRA
+SC_1:   STAA SWPAR
+        BNE SC_S
+        LDAA CF
+        STAA CBW
+        LDAA CF+1
+        STAA CEW
+        LDAA CF+2
+        STAA CBB
+        LDAA CF+3
+        STAA CEB
+        BRA SC_J
+SC_S:   LDAA CF+2
+        STAA CBW
+        LDAA CF+3
+        STAA CEW
+        LDAA CF
+        STAA CBB
+        LDAA CF+1
+        STAA CEB
+SC_J:   LDAA CF+4
+        STAA JIT
+        LDAA CF+5
+        STAA BOOKEN
+        RTS
+CFGINIT: LDAA #12
+        STAA CF
+        STAA CF+2
+        LDAA #2
+        STAA CF+1
+        STAA CF+3
+        CLR CF+4
+        LDAA #1
+        STAA CF+5
+        CLR CF+6
+        CLR SELROW
+        RTS
+; ---------------------------------------------------------------------
+;  self-play setup screen.  A = 1 start, 0 back
+; ---------------------------------------------------------------------
+SELFSETUP: CLR BGB
+        JSR CLS
+        LDAA #C_RED
+        STAA FGB
+        LDAA #8
+        LDAB #4
+        LDX #T_SST
+        JSR PRTAT
+        LDAA #C_YEL
+        STAA FGB
+        LDAA #6
+        LDAB #78
+        LDX #T_SS1
+        JSR PRTAT
+        LDAA #6
+        LDAB #84
+        LDX #T_SS2
+        JSR PRTAT
+        LDAA #6
+        LDAB #90
+        LDX #T_SS3
+        JSR PRTAT
+SS_D:   JSR SSDRAW
+SS_K:   JSR GETKEY
+        CMPA #13
+        BEQ SS_GO
+        CMPA #27
+        BEQ SS_BK
+        CMPA #$51
+        BEQ SS_BK
+        CMPA #$2C
+        BEQ SS_DN
+        CMPA #$2E
+        BEQ SS_UP
+        CMPA #$31
+        BCS SS_K
+        CMPA #$38
+        BCC SS_K
+        SUBA #$31
+        STAA SELROW
+        BRA SS_D
+SS_GO:  LDAA #1
+        RTS
+SS_BK:  CLRA
+        RTS
+SS_UP:  JSR SSPTR
+        LDAA SELROW
+        CMPA #5
+        BCC SS_TG
+        LDAB SELROW
+        PSHX
+        LDX #SSMAX
+        ABX
+        LDAB 0,X
+        PULX
+        LDAA 0,X
+        CBA
+        BCC SS_D
+        INCA
+        STAA 0,X
+        BRA SS_D
+SS_DN:  JSR SSPTR
+        LDAA SELROW
+        CMPA #5
+        BCC SS_TG
+        LDAA 0,X
+        BEQ SS_D
+        DECA
+        STAA 0,X
+        BRA SS_D
+SS_TG:  LDAA 0,X
+        EORA #1
+        STAA 0,X
+        BRA SS_D
+SSPTR:  LDAB SELROW
+        LDX #CF
+        ABX
+        RTS
+SSDRAW: CLR HI
+SD_L:   LDAA #C_YEL
+        STAA FGB
+        LDAA HI
+        ASLA
+        ASLA
+        ASLA
+        ADDA #20
+        STAA TROW
+        CLR TCOL
+        LDAA #$20
+        LDAB HI
+        CMPB SELROW
+        BNE SD_M
+        LDAA #$3E
+SD_M:   JSR PUTC
+        LDAA #2
+        STAA TCOL
+        LDAA HI
+        LDAB #11
+        MUL
+        ADDD #SSLAB
+        STD TMPW
+        LDX TMPW
+        JSR PUTS
+        LDAA #14
+        STAA TCOL
+        LDAB HI
+        LDX #CF
+        ABX
+        LDAA 0,X
+        LDAB HI
+        CMPB #5
+        BCC SD_B
+        JSR PRNUM
+        BRA SD_N
+SD_B:   TSTA
+        BNE SD_ON
+        LDX #T_OFF
+        BRA SD_P
+SD_ON:  LDX #T_ON
+SD_P:   JSR PUTS
+SD_N:   INC HI
+        LDAA HI
+        CMPA #7
+        BNE SD_L
+        RTS
 DRAWSELF:
         LDAA #C_YEL
         STAA FGB
         LDAA #26
         STAA TCOL
-        LDAA #48
+        LDAA #40
         STAA TROW
-        LDAA #$57
+        LDAA #$41
         JSR PUTC
         LDAA #$3A
         JSR PUTC
@@ -2386,7 +3083,7 @@ DRAWSELF:
         JSR PRNUM
         LDAA #26
         STAA TCOL
-        LDAA #54
+        LDAA #46
         STAA TROW
         LDAA #$42
         JSR PUTC
@@ -2396,7 +3093,7 @@ DRAWSELF:
         JSR PRNUM
         LDAA #26
         STAA TCOL
-        LDAA #60
+        LDAA #52
         STAA TROW
         LDAA #$44
         JSR PUTC
@@ -2406,7 +3103,7 @@ DRAWSELF:
         JSR PRNUM
         LDAA #26
         STAA TCOL
-        LDAA #66
+        LDAA #58
         STAA TROW
         LDAA #$50
         JSR PUTC
@@ -2534,7 +3231,7 @@ FONT:
         .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
         .BYTE $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$30,$C0,$C0,$C0,$30
         .BYTE $30,$0C,$0C,$0C,$30,$CC,$30,$FC,$30,$CC,$00,$30,$FC,$30,$00
-        .BYTE $00,$00,$00,$00,$00,$00,$00,$FC,$00,$00,$00,$00,$00,$00,$30
+        .BYTE $00,$00,$00,$30,$C0,$00,$00,$FC,$00,$00,$00,$00,$00,$00,$30
         .BYTE $0C,$0C,$30,$C0,$C0,$FC,$CC,$CC,$CC,$FC,$30,$F0,$30,$30,$FC
         .BYTE $F0,$0C,$30,$C0,$FC,$F0,$0C,$30,$0C,$F0,$CC,$CC,$FC,$0C,$0C
         .BYTE $FC,$C0,$F0,$0C,$F0,$3C,$C0,$F0,$CC,$30,$FC,$0C,$30,$30,$30

@@ -11,10 +11,14 @@ evaluation, but the program around it is new:
 - **128x96 four-colour graphics** (CG3 mode): 12x11 piece sprites, a small
   built-in font, rank/file labels, and a dithered highlight on the last move
   and on the square you are typing from
+- **Draw rules:** threefold repetition, the 50-move rule (100 plies without a
+  pawn move or capture) and bare-minimum material (K vs K, or K plus one minor
+  piece vs K) end the game automatically
+- **Takeback and hint** keys (see below)
 - A single legality rule everywhere (no FAST/ORIGINAL toggle any more): moves
   that leave your king in check are rejected, mate and stalemate are reported
 
-Needs the **16K RAM expansion**. 5,999 bytes at $5000, variables at $7C00,
+Needs the **16K RAM expansion**. 7,648 bytes at $5000, variables at $7C00,
 stack at $8FFF.
 
 ## Load and play
@@ -34,6 +38,8 @@ press **Enter**, for example `E2E4`.
 | Enter | play it (illegal moves are refused, nothing changes) |
 | CTRL-A or `0` | erase the last character |
 | BREAK | clear the whole entry |
+| T | take back: undoes your last move and the computer's reply (up to 16 plies; works after mate or a draw too) |
+| / | hint: shows the move the computer would play for you, as `H:E2E4` |
 | N | new game (back to colour choice) |
 | Q | quit: cold-starts BASIC again |
 
@@ -55,15 +61,37 @@ book, or after its second move, the search takes over. The book is generated
 by `tools/gen_book.py` (every line is checked with python-chess); edit the
 lines there and rebuild.
 
+## Draws
+
+The game stops with a red message: **DRAW! REPEAT** (same position, same side
+to move, for the third time), **DRAW! 50 MOVE RULE**, or **DRAW! NO MATERIAL**.
+Mate and stalemate take priority. Positions are compared by a 32-bit hash that
+includes castling rights; en passant is ignored (it can't matter, since a pawn
+move resets the repetition window). "No material" is deliberately narrow: K+N
+vs K and K+B vs K, but not two bishops, so it never ends a game that could
+still be won.
+
 ## Hidden self-play mode
 
-On the title screen press **S** (it isn't shown). The engine plays both sides,
-game after game, redrawing every move. The panel shows **W:** White wins,
-**B:** Black wins, **D:** draws and **P:** the current ply. Games longer than
-200 plies (`SPMAX`) count as draws, since the engine has no repetition or
-50-move rule and tends to shuffle when neither side finds progress. Hold
-**BREAK** (or **Q**) until the current move finishes to stop and return to the
-title screen. The book's random choice is reseeded each game, so openings vary.
+On the title screen press **S** (it isn't shown). A setup screen lets you tune
+the two sides before the engine plays itself, game after game:
+
+| Row | Setting | Default |
+|---|---|---|
+| 1, 2 | A: castling bonus, centre/development bonus (0-60) | 12, 2 |
+| 3, 4 | B: castling bonus, centre/development bonus (0-60) | 12, 2 |
+| 5 | score jitter, a random 0..n added to each root move's score (0-10) | 0 |
+| 6 | opening book on/off | on |
+| 7 | swap A/B colours every game | off |
+
+Press **1-7** to pick a row, **,** and **.** to lower/raise it, **Enter** to
+start, **BREAK** to go back. With swap off, A plays White and B plays Black;
+with swap on they alternate, so the tallies compare the two settings fairly.
+The panel shows **A:** wins for setting A, **B:** wins for B, **D:** draws and
+**P:** the current ply (tallies stop at 255). Games also end by the draw rules
+above, or at 250 plies. Hold **BREAK** (or **Q**) until the current move
+finishes to stop. With jitter 0 and the book off every game is identical, so
+use some jitter or the book (the book's choice is reseeded each game).
 
 ## Speed
 
@@ -92,15 +120,13 @@ Same algorithm, rewritten as straight 6803 code on a 0x88 board:
   several of them were always zero. The new engine does what the 6502 original
   does, which makes it play a little differently from the old port.
 - The original evaluation gives no reason to castle, so castling gets a small
-  bonus (`CBONUS` in the source, +12). In self-play against the unmodified
-  version it castled in 13 of 24 games and scored the same (4 wins each, the
-  rest drawn).
+  bonus (+12 by default; the self-play setup screen can change it). In
+  self-play against the unmodified version it castled in 13 of 24 games and
+  scored the same.
 
 ## Not included
 
-Underpromotion, the 50-move and repetition draw rules, automatic
-insufficient-material draws, takeback and hints. The supplied opening book is
-still unused.
+Underpromotion (pawns always become queens), difficulty levels, sound.
 
 ## Files
 
@@ -123,14 +149,21 @@ All in a headless emulator (Mike Tinnes' MC-10 core with the stock ROM), with
   game positions with castling rights, en passant and promotions) match exactly,
   and perft to depth 3 matches python-chess's counts (promotions limited to
   queens on both sides)
-- 85 full games played through the real keyboard matrix, as both colours: after
+- Full games played through the real keyboard matrix as both colours, after
   every move the program's board matches python-chess; illegal entries are
   refused; mate and stalemate are reported correctly. The games included human
-  and computer castling, en passant, promotions, and the computer being mated
-- Self-play: 5 consecutive engine-vs-engine games (1,000 plies) watched in the
-  emulator: every move legal per python-chess, board identical after every ply,
-  tallies and ply counter correct (all five hit the 200-ply cap and were
-  drawn)
+  and computer castling, en passant, promotions and the computer being mated
+  (the earlier 85-game run, plus 30 more with the draw code in)
+- Draws: repetition, 50-move and no-material endings were driven from set-up
+  positions and fired on exactly the same ply as python-chess. Testing caught a
+  weak first position hash that confused two different rook placements; it was
+  replaced before release
+- Takeback and hint: 12 games up to 16 plies deep and 10 played to the end,
+  both colours: after each takeback the board, side to move, clock and the
+  U:/C: texts match python-chess; hints are always legal and change nothing;
+  takeback works after mate
+- Self-play: 40 consecutive games with jitter and colour swap: every move legal,
+  board identical after every ply, A/B/D tallies correct for each game
 - The finished cassette image loads through BASIC's own `CLEAR`/`CLOADM`/`EXEC`
   and comes out byte-identical to the .bin; `Q` returns to the BASIC banner
 
